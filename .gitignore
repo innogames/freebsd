@@ -1,0 +1,6 @@
+*.swp
+sbin/pfctl/pfctl
+sbin/pfctl/*.o
+sbin/pfctl/parse.c
+sbin/pfctl/pfctl.8.gz
+
