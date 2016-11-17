@@ -550,6 +550,9 @@ gif_input(m, af, ifp)
 #ifdef MAC
 	mac_ifnet_create_mbuf(ifp, m);
 #endif
+	/* Remove the M_DECRYPTED flag. Make icmp_error() work again
+	   for packets decapsulated from the tunnel. */
+	m->m_flags &= ~(M_DECRYPTED);
 
 	if (bpf_peers_present(ifp->if_bpf)) {
 		u_int32_t af1 = af;
