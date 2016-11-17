@@ -149,6 +149,10 @@ gre_input2(struct mbuf *m ,int hlen, u_char proto)
 	case IPPROTO_GRE:
 		hlen += sizeof(struct gre_h);
 
+		/* Remove the M_DECRYPTED flag. Make icmp_error() work again
+		   for packets decapsulated from the tunnel. */
+		m->m_flags &= ~(M_DECRYPTED);
+
 		/* process GRE flags as packet can be of variable len */
 		flags = ntohs(gip->gi_flags);
 
