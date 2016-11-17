@@ -358,5 +358,9 @@ unmask(struct pf_addr *m, sa_family_t af)
 		for (i = 31; tmp & (1 << i); --i)
 			b++;
 	}
+
+	if (af == AF_INET && b == 128)
+		b=32;
+
 	return (b);
 }
