@@ -1545,8 +1545,10 @@ pf_src_tree_remove_state(struct pf_state *s)
  * unlocked, since it needs to go through key hash locking.
  */
 int
-pf_unlink_state(struct pf_state *s, u_int flags)
+pf_unlink_state(struct pf_state *s, u_int flags, u_int kill_flags)
 {
+	// TODO: make use of kill_flags == KILL_WITH_RST
+
 	struct pf_idhash *ih = &V_pf_idhash[PF_IDHASH(s)];
 
 	if ((flags & PF_ENTER_LOCKED) == 0)
@@ -1628,7 +1630,7 @@ relock:
 		LIST_FOREACH(s, &ih->states, entry) {
 			if (pf_state_expires(s) <= time_uptime) {
 				V_pf_status.states -=
-				    pf_unlink_state(s, PF_ENTER_LOCKED);
+				    pf_unlink_state(s, PF_ENTER_LOCKED, 0);
 				goto relock;
 			}
 			s->rule.ptr->rule_flag |= PFRULE_REFS;
@@ -4325,7 +4327,7 @@ pf_test_state_tcp(struct pf_state **state, int direction, struct pfi_kif *kif,
 		}
 		/* XXX make sure it's the same direction ?? */
 		(*state)->src.state = (*state)->dst.state = TCPS_CLOSED;
-		pf_unlink_state(*state, PF_ENTER_LOCKED);
+		pf_unlink_state(*state, PF_ENTER_LOCKED, 0);
 		*state = NULL;
 		return (PF_DROP);
 	}
