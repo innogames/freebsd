@@ -1,0 +1,10 @@
+*.swp
+sbin/pfctl/pfctl
+sbin/pfctl/*.o
+sbin/pfctl/parse.c
+sbin/pfctl/pfctl.8.gz
+sbin/pfctl/.depend
+sbin/pfctl/pfctl.debug
+sbin/pfctl/pfctl.full
+*.orig
+*.rej
