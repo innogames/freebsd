@@ -83,7 +83,9 @@ options 	INCLUDE_CONFIG_FILE	# Include this file in kernel
 
 # Debugging support.  Always need this:
 options 	KDB			# Enable kernel debugger support.
+options		DDB			# In-kernel debugger
 options 	KDB_TRACE		# Print a stack trace for a panic.
+options		BREAK_TO_DEBUGGER	# Go to debugger with enter tylde b
 
 # Make an SMP-capable kernel by default
 options 	SMP			# Symmetric MultiProcessor Kernel
