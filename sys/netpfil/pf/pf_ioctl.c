@@ -3541,7 +3541,7 @@ pf_ukill_srcnodes(struct pfioc_universal_kill *puk)
 			    (!puk->puk_ifname[0] || !strcmp(puk->puk_ifname,
 			     sn->kif->pfik_name))
 			    ) {
-				pf_unlink_src_node_locked(sn);
+				pf_unlink_src_node(sn);
 				LIST_INSERT_HEAD(&kill, sn, entry);
 				sn->expire = 1;
 			}
