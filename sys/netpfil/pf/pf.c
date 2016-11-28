@@ -139,14 +139,32 @@ struct pf_send_entry {
 		PFSE_ICMP6,
 	}				pfse_type;
 	union {
-		struct route		ro;
+#ifdef INET
+		struct {
+			struct route		ro;
+			struct rtentry		ro_rt;
+			struct sockaddr		ro_rt_gw;
+		} ro;
+#endif
+#ifdef INET6
+		struct {
+			struct route_in6	ro6;
+			struct rtentry		ro6_rt;
+			struct sockaddr		ro6_rt_gw;
+		} ro6;
+#endif
 		struct {
 			int		type;
 			int		code;
 			int		mtu;
 		} icmpopts;
 	} u;
-#define	pfse_ro		u.ro
+#define	pfse_ro		u.ro.ro
+#define	pfse_ro_rt	u.ro.ro_rt
+#define	pfse_ro_rt_gw	u.ro.ro_rt_gw
+#define	pfse_ro6	u.ro6.ro6
+#define	pfse_ro6_rt	u.ro6.ro6_rt
+#define	pfse_ro6_rt_gw	u.ro6.ro6_rt_gw
 #define	pfse_icmp_type	u.icmpopts.type
 #define	pfse_icmp_code	u.icmpopts.code
 #define	pfse_icmp_mtu	u.icmpopts.mtu
@@ -217,7 +235,7 @@ static void		 pf_send_tcp(struct mbuf *,
 			    const struct pf_addr *, const struct pf_addr *,
 			    u_int16_t, u_int16_t, u_int32_t, u_int32_t,
 			    u_int8_t, u_int16_t, u_int16_t, u_int8_t, int,
-			    u_int16_t, struct ifnet *);
+			    u_int16_t, struct ifnet *, struct pf_state *s);
 static void		 pf_send_icmp(struct mbuf *, u_int8_t, u_int8_t,
 			    sa_family_t, struct pf_rule *);
 static void		 pf_detach_state(struct pf_state *);
@@ -282,11 +300,15 @@ static void		 pf_purge_unlinked_rules(void);
 static int		 pf_mtag_uminit(void *, int, int);
 static void		 pf_mtag_free(struct m_tag *);
 #ifdef INET
+static void		 pf_rebuild_route(struct pf_send_entry *pfse,
+			    struct pf_state *state, struct pf_addr *dst);
 static void		 pf_route(struct mbuf **, struct pf_rule *, int,
 			    struct ifnet *, struct pf_state *,
 			    struct pf_pdesc *);
 #endif /* INET */
 #ifdef INET6
+static void		 pf_rebuild_route6(struct pf_send_entry *pfse,
+			    struct pf_state *state, struct pf_addr *dst);
 static void		 pf_change_a6(struct pf_addr *, u_int16_t *,
 			    struct pf_addr *, u_int8_t);
 static void		 pf_route6(struct mbuf **, struct pf_rule *, int,
@@ -1325,6 +1347,69 @@ second_run:
 
 /* END state table stuff */
 
+#ifdef INET
+static void
+pf_rebuild_route(struct pf_send_entry *pfse, struct pf_state *state, struct pf_addr *dst)
+{
+	if (state->rt_kif && state->rt_kif->pfik_ifp) {
+		/* This route can not be freed! */
+		pfse->pfse_ro.ro_flags = RT_NORTREF|RT_PFROUTE;
+
+		/* Assign gateway interface and flags. */
+		pfse->pfse_ro_rt.rt_flags  = RTF_UP|RTF_HOST|RTF_GATEWAY;
+		pfse->pfse_ro_rt.rt_ifp    = state->rt_kif->pfik_ifp;
+		pfse->pfse_ro_rt.rt_ifa    = state->rt_kif->pfik_ifp->if_addr;
+		pfse->pfse_ro_rt.rt_mtu    = state->rt_kif->pfik_ifp->if_mtu;
+		pfse->pfse_ro_rt.rt_fibnum = state->rt_kif->pfik_ifp->if_fib;
+
+		/* Assign gateway address. */
+		((struct sockaddr_in*)&pfse->pfse_ro_rt_gw)->sin_family = AF_INET;
+		((struct sockaddr_in*)&pfse->pfse_ro_rt_gw)->sin_len = sizeof(struct sockaddr_in);
+		((struct sockaddr_in*)&pfse->pfse_ro_rt_gw)->sin_addr = state->rt_addr.v4;
+		/* Assign destination address. */
+		((struct sockaddr_in*)&pfse->pfse_ro.ro_dst)->sin_family = AF_INET;
+		((struct sockaddr_in*)&pfse->pfse_ro.ro_dst)->sin_len = sizeof(struct sockaddr_in);
+		((struct sockaddr_in*)&pfse->pfse_ro.ro_dst)->sin_addr = dst->v4;
+
+		/* Glue things together. */
+		pfse->pfse_ro_rt.rt_gateway = &pfse->pfse_ro_rt_gw;
+		pfse->pfse_ro.ro_rt = &pfse->pfse_ro_rt;
+	}
+}
+#endif
+
+#ifdef INET6
+static void
+pf_rebuild_route6(struct pf_send_entry *pfse, struct pf_state *state, struct pf_addr *dst)
+{
+	if (state->rt_kif && state->rt_kif->pfik_ifp) {
+		/* This route can not be freed! */
+		pfse->pfse_ro6.ro_flags = RT_NORTREF|RT_PFROUTE;
+
+		/* Assign gateway interface and flags. */
+		pfse->pfse_ro6_rt.rt_flags  = RTF_UP|RTF_HOST|RTF_GATEWAY;
+		pfse->pfse_ro6_rt.rt_ifp    = state->rt_kif->pfik_ifp;
+		pfse->pfse_ro6_rt.rt_ifa    = state->rt_kif->pfik_ifp->if_addr;
+		pfse->pfse_ro6_rt.rt_mtu    = state->rt_kif->pfik_ifp->if_mtu;
+		pfse->pfse_ro6_rt.rt_fibnum = state->rt_kif->pfik_ifp->if_fib;
+
+		/* Assign gateway address. */
+		((struct sockaddr_in6*)&pfse->pfse_ro6_rt_gw)->sin6_family = AF_INET6;
+		((struct sockaddr_in6*)&pfse->pfse_ro6_rt_gw)->sin6_len = sizeof(struct sockaddr_in6);
+		((struct sockaddr_in6*)&pfse->pfse_ro6_rt_gw)->sin6_addr = state->rt_addr.v6;
+		/* Assign destination address. */
+		((struct sockaddr_in6*)&pfse->pfse_ro6.ro_dst)->sin6_family = AF_INET6;
+		((struct sockaddr_in6*)&pfse->pfse_ro6.ro_dst)->sin6_len = sizeof(struct sockaddr_in6);
+		((struct sockaddr_in6*)&pfse->pfse_ro6.ro_dst)->sin6_addr = dst->v6;
+
+		/* Glue things together. */
+		pfse->pfse_ro6_rt.rt_gateway = &pfse->pfse_ro6_rt_gw;
+		pfse->pfse_ro6.ro_rt = &pfse->pfse_ro6_rt;
+	}
+}
+#endif
+
+
 static void
 pf_send(struct pf_send_entry *pfse)
 {
@@ -1341,6 +1426,13 @@ pf_intr(void *v)
 	struct pf_send_head queue;
 	struct pf_send_entry *pfse, *next;
 
+#ifdef INET
+	struct route *ro = NULL;
+#endif
+#ifdef INET6
+	struct route_in6 *ro6 = NULL;
+#endif
+
 	CURVNET_SET((struct vnet *)v);
 
 	PF_SENDQ_LOCK();
@@ -1352,7 +1444,11 @@ pf_intr(void *v)
 		switch (pfse->pfse_type) {
 #ifdef INET
 		case PFSE_IP:
-			ip_output(pfse->pfse_m, NULL, NULL, 0, NULL, NULL);
+			// Check if there is a route created by pf_rebuild_route
+			if (pfse->pfse_ro.ro_flags & RT_PFROUTE) {
+				ro = &pfse->pfse_ro;
+			}
+			ip_output(pfse->pfse_m, NULL, ro, 0, NULL, NULL);
 			break;
 		case PFSE_ICMP:
 			icmp_error(pfse->pfse_m, pfse->pfse_icmp_type,
@@ -1361,7 +1457,11 @@ pf_intr(void *v)
 #endif /* INET */
 #ifdef INET6
 		case PFSE_IP6:
-			ip6_output(pfse->pfse_m, NULL, NULL, 0, NULL, NULL,
+			// Check if there is a route created by pf_rebuild_route
+			if (pfse->pfse_ro6.ro_flags & RT_PFROUTE) {
+				ro6 = &pfse->pfse_ro6;
+			}
+			ip6_output(pfse->pfse_m, NULL, ro6, 0, NULL, NULL,
 			    NULL);
 			break;
 		case PFSE_ICMP6:
@@ -1547,7 +1647,8 @@ pf_src_tree_remove_state(struct pf_state *s)
 int
 pf_unlink_state(struct pf_state *s, u_int flags, u_int kill_flags)
 {
-	// TODO: make use of kill_flags == KILL_WITH_RST
+	int srcidx = s->direction == PF_IN ? 1 : 0 ;
+	int dstidx = s->direction == PF_IN ? 0 : 1 ;
 
 	struct pf_idhash *ih = &V_pf_idhash[PF_IDHASH(s)];
 
@@ -1567,14 +1668,40 @@ pf_unlink_state(struct pf_state *s, u_int flags, u_int kill_flags)
 	}
 
 	if (s->src.state == PF_TCPS_PROXY_DST) {
-		/* XXX wire key the right one? */
+		/*
+		 * If still establishing SynProxy,
+		 * send RST to site who started this connection.
+		 */
 		pf_send_tcp(NULL, s->rule.ptr, s->key[PF_SK_WIRE]->af,
 		    &s->key[PF_SK_WIRE]->addr[1],
 		    &s->key[PF_SK_WIRE]->addr[0],
 		    s->key[PF_SK_WIRE]->port[1],
 		    s->key[PF_SK_WIRE]->port[0],
 		    s->src.seqhi, s->src.seqlo + 1,
-		    TH_RST|TH_ACK, 0, 0, 0, 1, s->tag, NULL);
+		    TH_RST|TH_ACK, 0, 0, 0, 1, s->tag, NULL, NULL);
+	}
+	else if (kill_flags & KILL_WITH_RST && s->key[PF_SK_WIRE]->proto == IPPROTO_TCP) {
+		/* For non-SynProxy operation send RSTs to both sides of connection. */
+
+		/* Send to connection originator. Do it directly. */
+		pf_send_tcp(NULL, s->rule.ptr, s->key[PF_SK_WIRE]->af,
+		    &s->key[PF_SK_WIRE]->addr[srcidx],
+		    &s->key[PF_SK_WIRE]->addr[dstidx],
+		    s->key[PF_SK_WIRE]->port[srcidx],
+		    s->key[PF_SK_WIRE]->port[dstidx],
+		    s->dst.seqlo + s->dst.seqdiff, 0,
+		    TH_RST, 0, 0, s->rule.ptr->return_ttl, 1,
+		    s->tag, NULL, NULL);
+
+		/* Send to connection target via gateway specified in rule. */
+		pf_send_tcp(NULL, s->rule.ptr, s->key[PF_SK_WIRE]->af,
+		    &s->key[PF_SK_WIRE]->addr[dstidx],
+		    &s->key[PF_SK_WIRE]->addr[srcidx],
+		    s->key[PF_SK_WIRE]->port[dstidx],
+		    s->key[PF_SK_WIRE]->port[srcidx],
+		    s->src.seqlo + s->src.seqdiff, 0,
+		    TH_RST, 0, 0, s->rule.ptr->return_ttl, 1,
+		    s->tag, NULL, s);
 	}
 
 	LIST_REMOVE(s, entry);
@@ -2250,7 +2377,7 @@ pf_send_tcp(struct mbuf *replyto, const struct pf_rule *r, sa_family_t af,
     const struct pf_addr *saddr, const struct pf_addr *daddr,
     u_int16_t sport, u_int16_t dport, u_int32_t seq, u_int32_t ack,
     u_int8_t flags, u_int16_t win, u_int16_t mss, u_int8_t ttl, int tag,
-    u_int16_t rtag, struct ifnet *ifp)
+    u_int16_t rtag, struct ifnet *ifp, struct pf_state *s)
 {
 	struct pf_send_entry *pfse;
 	struct mbuf	*m;
@@ -2289,7 +2416,7 @@ pf_send_tcp(struct mbuf *replyto, const struct pf_rule *r, sa_family_t af,
 	}
 
 	/* Allocate outgoing queue entry, mbuf and mbuf tag. */
-	pfse = malloc(sizeof(*pfse), M_PFTEMP, M_NOWAIT);
+	pfse = malloc(sizeof(*pfse), M_PFTEMP, M_NOWAIT|M_ZERO);
 	if (pfse == NULL)
 		return;
 	m = m_gethdr(M_NOWAIT, MT_DATA);
@@ -2386,6 +2513,14 @@ pf_send_tcp(struct mbuf *replyto, const struct pf_rule *r, sa_family_t af,
 		h->ip_sum = 0;
 
 		pfse->pfse_type = PFSE_IP;
+
+		/*
+		 * If a state was given, it might contain
+		 * a route used for loadbalancing.
+		 */
+		if (s) {
+			pf_rebuild_route(pfse, s, &s->key[PF_SK_WIRE]->addr[1]);
+		}
 		break;
 #endif /* INET */
 #ifdef INET6
@@ -2398,6 +2533,15 @@ pf_send_tcp(struct mbuf *replyto, const struct pf_rule *r, sa_family_t af,
 		h6->ip6_hlim = IPV6_DEFHLIM;
 
 		pfse->pfse_type = PFSE_IP6;
+
+		/*
+		 * If a state was given, it might contain
+		 * a route used for loadbalancing.
+		 */
+		if (s) {
+			pf_rebuild_route6(pfse, s, &s->key[PF_SK_WIRE]->addr[1]);
+		}
+
 		break;
 #endif /* INET6 */
 	}
@@ -2414,7 +2558,7 @@ pf_send_icmp(struct mbuf *m, u_int8_t type, u_int8_t code, sa_family_t af,
 	struct pf_mtag *pf_mtag;
 
 	/* Allocate outgoing queue entry, mbuf and mbuf tag. */
-	pfse = malloc(sizeof(*pfse), M_PFTEMP, M_NOWAIT);
+	pfse = malloc(sizeof(*pfse), M_PFTEMP, M_NOWAIT|M_ZERO);
 	if (pfse == NULL)
 		return;
 
@@ -3393,7 +3537,7 @@ pf_test_rule(struct pf_rule **rm, struct pf_state **sm, int direction,
 				pf_send_tcp(m, r, af, pd->dst,
 				    pd->src, th->th_dport, th->th_sport,
 				    ntohl(th->th_ack), ack, TH_RST|TH_ACK, 0, 0,
-				    r->return_ttl, 1, 0, kif->pfik_ifp);
+				    r->return_ttl, 1, 0, kif->pfik_ifp, NULL);
 			}
 		} else if (pd->proto != IPPROTO_ICMP && af == AF_INET &&
 		    r->return_icmp)
@@ -3662,7 +3806,7 @@ pf_create_state(struct pf_rule *r, struct pf_rule *nr, struct pf_rule *a,
 		s->src.mss = mss;
 		pf_send_tcp(NULL, r, pd->af, pd->dst, pd->src, th->th_dport,
 		    th->th_sport, s->src.seqhi, ntohl(th->th_seq) + 1,
-		    TH_SYN|TH_ACK, 0, s->src.mss, 0, 1, 0, NULL);
+		    TH_SYN|TH_ACK, 0, s->src.mss, 0, 1, 0, NULL, NULL);
 		REASON_SET(&reason, PFRES_SYNPROXY);
 		return (PF_SYNPROXY_DROP);
 	}
@@ -4096,7 +4240,7 @@ pf_tcp_track_full(struct pf_state_peer *src, struct pf_state_peer *dst,
 				    th->th_sport, ntohl(th->th_ack), 0,
 				    TH_RST, 0, 0,
 				    (*state)->rule.ptr->return_ttl, 1, 0,
-				    kif->pfik_ifp);
+				    kif->pfik_ifp, NULL);
 			src->seqlo = 0;
 			src->seqhi = 1;
 			src->max_win = 1;
@@ -4249,7 +4393,7 @@ pf_test_state_tcp(struct pf_state **state, int direction, struct pfi_kif *kif,
 			pf_send_tcp(NULL, (*state)->rule.ptr, pd->af, pd->dst,
 			    pd->src, th->th_dport, th->th_sport,
 			    (*state)->src.seqhi, ntohl(th->th_seq) + 1,
-			    TH_SYN|TH_ACK, 0, (*state)->src.mss, 0, 1, 0, NULL);
+			    TH_SYN|TH_ACK, 0, (*state)->src.mss, 0, 1, 0, NULL, NULL);
 			REASON_SET(reason, PFRES_SYNPROXY);
 			return (PF_SYNPROXY_DROP);
 		} else if (!(th->th_flags & TH_ACK) ||
@@ -4279,7 +4423,7 @@ pf_test_state_tcp(struct pf_state **state, int direction, struct pfi_kif *kif,
 			    &sk->addr[pd->sidx], &sk->addr[pd->didx],
 			    sk->port[pd->sidx], sk->port[pd->didx],
 			    (*state)->dst.seqhi, 0, TH_SYN, 0,
-			    (*state)->src.mss, 0, 0, (*state)->tag, NULL);
+			    (*state)->src.mss, 0, 0, (*state)->tag, NULL, *state);
 			REASON_SET(reason, PFRES_SYNPROXY);
 			return (PF_SYNPROXY_DROP);
 		} else if (((th->th_flags & (TH_SYN|TH_ACK)) !=
@@ -4294,12 +4438,12 @@ pf_test_state_tcp(struct pf_state **state, int direction, struct pfi_kif *kif,
 			    pd->src, th->th_dport, th->th_sport,
 			    ntohl(th->th_ack), ntohl(th->th_seq) + 1,
 			    TH_ACK, (*state)->src.max_win, 0, 0, 0,
-			    (*state)->tag, NULL);
+			    (*state)->tag, NULL, NULL);
 			pf_send_tcp(NULL, (*state)->rule.ptr, pd->af,
 			    &sk->addr[pd->sidx], &sk->addr[pd->didx],
 			    sk->port[pd->sidx], sk->port[pd->didx],
 			    (*state)->src.seqhi + 1, (*state)->src.seqlo + 1,
-			    TH_ACK, (*state)->dst.max_win, 0, 0, 1, 0, NULL);
+			    TH_ACK, (*state)->dst.max_win, 0, 0, 1, 0, NULL, *state);
 			(*state)->src.seqdiff = (*state)->dst.seqhi -
 			    (*state)->src.seqlo;
 			(*state)->dst.seqdiff = (*state)->src.seqhi -
