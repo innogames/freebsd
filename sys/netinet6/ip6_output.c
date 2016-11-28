@@ -660,7 +660,8 @@ again:
 	}
 	if (rt != NULL) {
 		ia = (struct in6_ifaddr *)(rt->rt_ifa);
-		counter_u64_add(rt->rt_pksent, 1);
+		if ((ro->ro_flags & RT_PFROUTE) == 0)
+			counter_u64_add(rt->rt_pksent, 1);
 	}
 
 
