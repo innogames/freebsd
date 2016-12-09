@@ -22,9 +22,14 @@
 # MODULES_OVERRIDE=pf if_lagg ipmi pfsync pflog if_gre nullfs linux carp crypto hwpmc cc/cc_cdg cc/cc_chd cc/cc_cubic cc/cc_hd cc/cc_htcp cc/cc_vegas aesni
 
 cpu		HAMMER
-ident		StarshipTitanic10
+ident		StarshipTitanic11
 
+# IPsec is needed on our routers and on some HWLBs
+options		IPSEC
+options		TCP_SIGNATURE
 device		crypto
+device		cryptodev
+
 device		netmap
 
 makeoptions	DEBUG=-g		# Build kernel with gdb(1) debug symbols
@@ -35,7 +40,6 @@ options 	SCHED_ULE		# ULE scheduler
 options 	PREEMPTION		# Enable kernel thread preemption
 options 	INET			# InterNETworking
 options 	INET6			# IPv6 communications protocols
-options		IPSEC
 options 	TCP_OFFLOAD		# TCP offload
 options 	SCTP			# Stream Control Transmission Protocol
 options 	FFS			# Berkeley Fast Filesystem
