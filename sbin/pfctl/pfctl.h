@@ -127,4 +127,12 @@ u_int32_t
 	 pfctl_get_ticket(struct pfr_buffer *, int, const char *);
 int	 pfctl_trans(int, struct pfr_buffer *, u_long, int);
 
+STAILQ_HEAD(killer_list, killer_entry);
+struct killer_list state_killers;
+struct killer_list src_node_killers;
+struct killer_entry {
+	STAILQ_ENTRY(killer_entry)	 entry;
+	char				*value;
+};
+
 #endif /* _PFCTL_H_ */
