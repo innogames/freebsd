@@ -1593,8 +1593,11 @@ pf_src_tree_remove_state(struct pf_state *s)
  * unlocked, since it needs to go through key hash locking.
  */
 int
-pf_unlink_state(struct pf_state *s, u_int flags)
+pf_unlink_state(struct pf_state *s, u_int flags, u_int kill_flags)
 {
+	int srcidx = s->direction == PF_IN ? 1 : 0 ;
+	int dstidx = s->direction == PF_IN ? 0 : 1 ;
+
 	struct pf_idhash *ih = &V_pf_idhash[PF_IDHASH(s)];
 
 	if ((flags & PF_ENTER_LOCKED) == 0)
@@ -1621,6 +1624,17 @@ pf_unlink_state(struct pf_state *s, u_int flags)
 		    s->key[PF_SK_WIRE]->port[0],
 		    s->src.seqhi, s->src.seqlo + 1,
 		    TH_RST|TH_ACK, 0, 0, 0, 1, s->tag, NULL);
+	} else if (kill_flags & KILL_WITH_RST &&
+		   s->key[PF_SK_WIRE]->proto == IPPROTO_TCP) {
+		/* Send to connection originator. */
+		pf_send_tcp(NULL, s->rule.ptr, s->key[PF_SK_WIRE]->af,
+		    &s->key[PF_SK_WIRE]->addr[srcidx],
+		    &s->key[PF_SK_WIRE]->addr[dstidx],
+		    s->key[PF_SK_WIRE]->port[srcidx],
+		    s->key[PF_SK_WIRE]->port[dstidx],
+		    s->dst.seqlo + s->dst.seqdiff, 0,
+		    TH_RST, 0, 0, s->rule.ptr->return_ttl, 1,
+		    s->tag, NULL);
 	}
 
 	LIST_REMOVE(s, entry);
@@ -1676,7 +1690,7 @@ relock:
 		LIST_FOREACH(s, &ih->states, entry) {
 			if (pf_state_expires(s) <= time_uptime) {
 				V_pf_status.states -=
-				    pf_unlink_state(s, PF_ENTER_LOCKED);
+				    pf_unlink_state(s, PF_ENTER_LOCKED, 0);
 				goto relock;
 			}
 			s->rule.ptr->rule_flag |= PFRULE_REFS;
@@ -4404,7 +4418,7 @@ pf_test_state_tcp(struct pf_state **state, int direction, struct pfi_kif *kif,
 		}
 		/* XXX make sure it's the same direction ?? */
 		(*state)->src.state = (*state)->dst.state = TCPS_CLOSED;
-		pf_unlink_state(*state, PF_ENTER_LOCKED);
+		pf_unlink_state(*state, PF_ENTER_LOCKED, 0);
 		*state = NULL;
 		return (PF_DROP);
 	}
