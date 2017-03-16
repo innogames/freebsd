@@ -706,7 +706,7 @@ relock:
 			LIST_FOREACH(s, &ih->states, entry) {
 				if (s->creatorid == creatorid) {
 					s->state_flags |= PFSTATE_NOSYNC;
-					pf_unlink_state(s, PF_ENTER_LOCKED);
+					pf_unlink_state(s, PF_ENTER_LOCKED, 0);
 					goto relock;
 				}
 			}
@@ -1075,7 +1075,7 @@ pfsync_in_del(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
 			continue;
 		}
 		st->state_flags |= PFSTATE_NOSYNC;
-		pf_unlink_state(st, PF_ENTER_LOCKED);
+		pf_unlink_state(st, PF_ENTER_LOCKED, 0);
 	}
 
 	return (len);
@@ -1107,7 +1107,7 @@ pfsync_in_del_c(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
 		}
 
 		st->state_flags |= PFSTATE_NOSYNC;
-		pf_unlink_state(st, PF_ENTER_LOCKED);
+		pf_unlink_state(st, PF_ENTER_LOCKED, 0);
 	}
 
 	return (len);
