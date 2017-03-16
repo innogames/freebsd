@@ -156,6 +156,8 @@ static void		 pf_clear_states(void);
 static int		 pf_clear_tables(void);
 static void		 pf_clear_srcnodes(struct pf_src_node *);
 static void		 pf_kill_srcnodes(struct pfioc_src_node_kill *);
+static void		 pf_ukill_states(struct pfioc_universal_kill *);
+static void		 pf_ukill_srcnodes(struct pfioc_universal_kill *);
 static void		 pf_tbladdr_copyout(struct pf_addr_wrap *);
 
 /*
@@ -1630,7 +1632,7 @@ relock_DIOCCLRSTATES:
 					 * delete messages.
 					 */
 					s->state_flags |= PFSTATE_NOSYNC;
-					pf_unlink_state(s, PF_ENTER_LOCKED);
+					pf_unlink_state(s, PF_ENTER_LOCKED, 0);
 					killed++;
 					goto relock_DIOCCLRSTATES;
 				}
@@ -1655,7 +1657,7 @@ relock_DIOCCLRSTATES:
 				psk->psk_pfcmp.creatorid = V_pf_status.hostid;
 			if ((s = pf_find_state_byid(psk->psk_pfcmp.id,
 			    psk->psk_pfcmp.creatorid))) {
-				pf_unlink_state(s, PF_ENTER_LOCKED);
+				pf_unlink_state(s, PF_ENTER_LOCKED, 0);
 				psk->psk_killed = 1;
 			}
 			break;
@@ -1706,7 +1708,7 @@ relock_DIOCKILLSTATES:
 				    (!psk->psk_ifname[0] ||
 				    !strcmp(psk->psk_ifname,
 				    s->kif->pfik_name))) {
-					pf_unlink_state(s, PF_ENTER_LOCKED);
+					pf_unlink_state(s, PF_ENTER_LOCKED, 0);
 					killed++;
 					goto relock_DIOCKILLSTATES;
 				}
@@ -1716,6 +1718,10 @@ relock_DIOCKILLSTATES:
 		psk->psk_killed = killed;
 		break;
 	}
+
+	case DIOCUKILLSTATES:
+		pf_ukill_states((struct pfioc_universal_kill *)addr);
+		break;
 
 	case DIOCADDSTATE: {
 		struct pfioc_state	*ps = (struct pfioc_state *)addr;
@@ -3202,6 +3208,10 @@ DIOCCHANGEADDR_error:
 		pf_kill_srcnodes((struct pfioc_src_node_kill *)addr);
 		break;
 
+	case DIOCUKILLSRCNODES:
+		pf_ukill_srcnodes((struct pfioc_universal_kill *)addr);
+		break;
+
 	case DIOCSETHOSTID: {
 		u_int32_t	*hostid = (u_int32_t *)addr;
 
@@ -3363,7 +3373,7 @@ relock:
 			s->timeout = PFTM_PURGE;
 			/* Don't send out individual delete messages. */
 			s->state_flags |= PFSTATE_NOSYNC;
-			pf_unlink_state(s, PF_ENTER_LOCKED);
+			pf_unlink_state(s, PF_ENTER_LOCKED, 0);
 			goto relock;
 		}
 		PF_HASHROW_UNLOCK(ih);
@@ -3421,6 +3431,163 @@ pf_clear_srcnodes(struct pf_src_node *n)
 		n->states = 0;
 	}
 }
+
+static void
+pf_ukill_states(struct pfioc_universal_kill *puk)
+{
+	struct pf_state		*s;
+	struct pf_state_key	*sk;
+	struct pf_addr		*srcaddr, *dstaddr;
+	u_int16_t		 srcport, dstport;
+	u_int			 i, killed_states = 0;
+
+	u_int kill_flags = puk->puk_killed_states;
+
+	if (puk->puk_pfcmp.id) {
+		if (puk->puk_pfcmp.creatorid == 0)
+			puk->puk_pfcmp.creatorid = V_pf_status.hostid;
+		if ((s = pf_find_state_byid(puk->puk_pfcmp.id,
+		    puk->puk_pfcmp.creatorid))) {
+			pf_unlink_state(s, PF_ENTER_LOCKED, kill_flags);
+			puk->puk_killed_states = 1;
+		}
+		return;
+	}
+
+	for (i = 0; i <= pf_hashmask; i++) {
+		struct pf_idhash *ih = &V_pf_idhash[i];
+
+relock:
+		PF_HASHROW_LOCK(ih);
+		LIST_FOREACH(s, &ih->states, entry) {
+			sk = s->key[PF_SK_WIRE];
+			if (s->direction == PF_OUT) {
+				srcaddr = &sk->addr[1];
+				dstaddr = &sk->addr[0];
+				srcport = sk->port[0];
+				dstport = sk->port[0];
+			} else {
+				srcaddr = &sk->addr[0];
+				dstaddr = &sk->addr[1];
+				srcport = sk->port[0];
+				dstport = sk->port[0];
+			}
+
+			if ((!puk->puk_af || sk->af == puk->puk_af)
+			    && (!puk->puk_proto || puk->puk_proto ==
+			    sk->proto) &&
+			    PF_MATCHA(puk->puk_src.neg,
+			    &puk->puk_src.addr.v.a.addr,
+			    &puk->puk_src.addr.v.a.mask,
+			    srcaddr, sk->af) &&
+			    PF_MATCHA(puk->puk_dst.neg,
+			    &puk->puk_dst.addr.v.a.addr,
+			    &puk->puk_dst.addr.v.a.mask,
+			    dstaddr, sk->af) &&
+			    PF_MATCHA(puk->puk_rdr.neg,
+			    &puk->puk_rdr.addr.v.a.addr,
+			    &puk->puk_rdr.addr.v.a.mask,
+			    &s->rt_addr, sk->af) &&
+			    (puk->puk_src.port_op == 0 ||
+			    pf_match_port(puk->puk_src.port_op,
+			    puk->puk_src.port[0], puk->puk_src.port[1],
+			    srcport)) &&
+			    (puk->puk_dst.port_op == 0 ||
+			    pf_match_port(puk->puk_dst.port_op,
+			    puk->puk_dst.port[0], puk->puk_dst.port[1],
+			    dstport)) &&
+			    (!puk->puk_table[0] ||
+			    (s->rule.ptr->rpool.cur &&
+			    s->rule.ptr->rpool.cur->addr.v.tblname[0] &&
+			    !strcmp(puk->puk_table,
+			    s->rule.ptr->rpool.cur->addr.v.tblname))) &&
+			    (!puk->puk_label[0] ||
+			    (s->rule.ptr->label[0] &&
+			    !strcmp(puk->puk_label,
+			    s->rule.ptr->label))) &&
+			    (!puk->puk_ifname[0] ||
+			    !strcmp(puk->puk_ifname,
+			    s->kif->pfik_name))) {
+				pf_unlink_state(s, PF_ENTER_LOCKED, kill_flags);
+				killed_states++;
+				goto relock;
+			}
+		}
+		PF_HASHROW_UNLOCK(ih);
+	}
+
+	puk->puk_killed_states = killed_states;
+}
+
+static void
+pf_ukill_srcnodes(struct pfioc_universal_kill *puk)
+{
+	struct pf_src_node_list	 kill;
+	u_int killed_states = 0;
+	u_int kill_flags = puk->puk_killed_states;
+
+	LIST_INIT(&kill);
+	for (int i = 0; i <= pf_srchashmask; i++) {
+		struct pf_srchash *sh = &V_pf_srchash[i];
+		struct pf_src_node *sn, *tmp;
+
+		PF_HASHROW_LOCK(sh);
+		LIST_FOREACH_SAFE(sn, &sh->nodes, entry, tmp)
+			if ((!puk->puk_af || sn->af == puk->puk_af) &&
+			    PF_MATCHA(puk->puk_src.neg,
+			      &puk->puk_src.addr.v.a.addr,
+			      &puk->puk_src.addr.v.a.mask,
+			      &sn->addr, sn->af) &&
+			    PF_MATCHA(puk->puk_dst.neg,
+			      &puk->puk_dst.addr.v.a.addr,
+			      &puk->puk_dst.addr.v.a.mask,
+			      &sn->raddr, sn->af) &&
+			    (!puk->puk_table[0] ||
+			     (sn->rule.ptr->rpool.cur &&
+			      sn->rule.ptr->rpool.cur->addr.v.tblname[0] &&
+			      !strcmp(puk->puk_table, sn->rule.ptr->rpool.cur->addr.v.tblname))) &&
+			    (!puk->puk_label[0] || (sn->rule.ptr->label[0] &&
+			     !strcmp(puk->puk_label, sn->rule.ptr->label))) &&
+			    (!puk->puk_ifname[0] || !strcmp(puk->puk_ifname,
+			     sn->kif->pfik_name))
+			    ) {
+				pf_unlink_src_node(sn);
+				LIST_INSERT_HEAD(&kill, sn, entry);
+				sn->expire = 1;
+			}
+		PF_HASHROW_UNLOCK(sh);
+	}
+
+	for (int i = 0; i <= pf_hashmask; i++) {
+		struct pf_idhash *ih = &V_pf_idhash[i];
+		struct pf_state *s;
+		int state_match;
+
+relock:
+		state_match = 0;
+		PF_HASHROW_LOCK(ih);
+		LIST_FOREACH(s, &ih->states, entry) {
+			if (s->src_node && s->src_node->expire == 1) {
+				state_match = 1;
+				s->src_node = NULL;
+			}
+			if (s->nat_src_node && s->nat_src_node->expire == 1) {
+				state_match = 1;
+				s->nat_src_node = NULL;
+			}
+			if (state_match && kill_flags) {
+				pf_unlink_state(s, PF_ENTER_LOCKED, kill_flags);
+				killed_states++;
+				goto relock;
+			}
+		}
+		PF_HASHROW_UNLOCK(ih);
+	}
+
+	puk->puk_killed_src_nodes = pf_free_src_nodes(&kill);
+	puk->puk_killed_states = killed_states;
+}
+
 
 static void
 pf_kill_srcnodes(struct pfioc_src_node_kill *psnk)

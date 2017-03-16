@@ -1258,6 +1258,22 @@ struct pfioc_state_kill {
 	u_int			psk_killed;
 };
 
+struct pfioc_universal_kill {
+	sa_family_t		puk_af;
+	int			puk_proto;
+	struct pf_rule_addr	puk_src;
+	struct pf_rule_addr	puk_dst;
+	struct pf_rule_addr	puk_rdr;
+	struct pf_state_cmp	puk_pfcmp;
+	char			puk_ifname[IFNAMSIZ];
+	char			puk_label[PF_RULE_LABEL_SIZE];
+	char			puk_table[PF_TABLE_NAME_SIZE];
+	u_int			puk_killed_states;
+	u_int			puk_killed_src_nodes;
+#define KILL_WITH_STATES 1
+#define KILL_WITH_RST    2
+};
+
 struct pfioc_states {
 	int	ps_len;
 	union {
@@ -1442,6 +1458,8 @@ struct pf_ifspeed {
 	u_int32_t		baudrate;
 };
 #define	DIOCGIFSPEED	_IOWR('D', 92, struct pf_ifspeed)
+#define DIOCUKILLSTATES		_IOWR('D', 93, struct pfioc_universal_kill)
+#define DIOCUKILLSRCNODES	_IOWR('D', 94, struct pfioc_universal_kill)
 
 #ifdef _KERNEL
 LIST_HEAD(pf_src_node_list, pf_src_node);
@@ -1523,7 +1541,8 @@ extern void			 pf_unload_vnet_purge(void);
 extern void			 pf_intr(void *);
 extern void			 pf_purge_expired_src_nodes(void);
 
-extern int			 pf_unlink_state(struct pf_state *, u_int);
+extern int			 pf_unlink_state(struct pf_state *,
+				     u_int, u_int);
 #define	PF_ENTER_LOCKED		0x00000001
 #define	PF_RETURN_LOCKED	0x00000002
 extern int			 pf_state_insert(struct pfi_kif *,
