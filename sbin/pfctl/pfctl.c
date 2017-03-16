@@ -72,10 +72,14 @@ int	 pfctl_clear_altq(int, int);
 int	 pfctl_clear_src_nodes(int, int);
 int	 pfctl_clear_states(int, const char *, int);
 void	 pfctl_addrprefix(char *, struct pf_addr *);
-int	 pfctl_kill_src_nodes(int, const char *, int);
-int	 pfctl_net_kill_states(int, const char *, int);
-int	 pfctl_label_kill_states(int, const char *, int);
-int	 pfctl_id_kill_states(int, const char *, int);
+void	 pfctl_parse_killer_opts(struct killer_list *killers,
+		struct pfioc_universal_kill *puk, int mode, char **srchost,
+		char **dsthost, char **rdrhost);
+void	 pfctl_universal_kill(struct pfioc_universal_kill *puk, int mode,
+		char *srchost, char *dsthost, char *rdrhost, int *sources,
+		int *dests, int *rdrhosts, int opts);
+int	 pfctl_kill_states(int dev, const char *iface, int opts);
+int	 pfctl_kill_src_nodes(int dev, const char *iface, int opts);
 void	 pfctl_init_options(struct pfctl *);
 int	 pfctl_load_options(struct pfctl *);
 int	 pfctl_load_limit(struct pfctl *, unsigned int, unsigned int);
@@ -115,10 +119,6 @@ char		*pf_device = "/dev/pf";
 char		*ifaceopt;
 char		*tableopt;
 const char	*tblcmdopt;
-int		 src_node_killers;
-char		*src_node_kill[2];
-int		 state_killers;
-char		*state_kill[2];
 int		 loadopt;
 int		 altqsupport;
 
@@ -439,274 +439,453 @@ pfctl_addrprefix(char *addr, struct pf_addr *mask)
 	freeaddrinfo(res);
 }
 
+/*
+ * Parse all command line options for state and src_node killing.
+ * Mode determines if state or src_node killing is performed.
+ */
+void
+pfctl_parse_killer_opts(struct killer_list *killers,
+    struct pfioc_universal_kill *puk, int mode, char **srchost,
+    char **dsthost, char **rdrhost)
+{
+	struct killer_entry *killer;
+
+	memset(puk, 0, sizeof(struct pfioc_universal_kill));
+
+	STAILQ_FOREACH(killer, killers, entry) {
+		if (!strcmp(killer->value, "srchost")) {
+			if (*srchost) {
+				warnx ("Only one source host can be specified with -K/-k");
+				usage();
+				/* not reached */
+			}
+			killer = STAILQ_NEXT(killer, entry);
+			if (killer==NULL) {
+				warnx ("-K/-k srchost requires another -K/-k with host name");
+				usage();
+			}
+			*srchost = killer->value;
+		} else if (!strcmp(killer->value, "dsthost")) {
+			if (*dsthost) {
+				warnx ("Only one destination host can be specified with -K/-k");
+				usage();
+				/* not reached */
+			}
+			killer = STAILQ_NEXT(killer, entry);
+			if (killer==NULL) {
+				warnx ("-K/-k dsthost requires another -K/-k with host name");
+				usage();
+			}
+			*dsthost = killer->value;
+		} else if (!strcmp(killer->value, "rdrhost")) {
+			if (mode & PF_KILL_SRC_NODES) {
+				warnx ("Only states can be killed by rdrhost, not source nodes");
+				usage();
+			}
+			if (*rdrhost) {
+				warnx ("Only one redirection target can be specified with -k");
+				usage();
+			}
+			killer = STAILQ_NEXT(killer, entry);
+			if (killer==NULL) {
+				warnx ("-k rdrhost requires another -k with redirection target's host name");
+				usage();
+			}
+			*rdrhost = killer->value;
+		} else if (!strcmp(killer->value, "label")) {
+			if (puk->puk_label[0]) {
+				warnx ("Only one label can be specified with -K/-k");
+				usage();
+			}
+			killer = STAILQ_NEXT(killer, entry);
+			if (killer==NULL) {
+				warnx ("-K/-k label requires another -K/-k with label name");
+				usage();
+			}
+			if (strlcpy(puk->puk_label, killer->value,
+			    sizeof(puk->puk_label)) >= sizeof(puk->puk_label))
+				errx(1, "label too long: %s", killer->value);
+		} else if (!strcmp(killer->value, "table")) {
+			if (puk->puk_table[0]) {
+				warnx ("Only one table can be specified with -K/-k");
+				usage();
+			}
+			killer = STAILQ_NEXT(killer, entry);
+			if (killer==NULL) {
+				warnx ("-K/-k table requires another -K/-k with table name");
+				usage();
+			}
+			if (strlcpy(puk->puk_table, killer->value,
+			    sizeof(puk->puk_table)) >= sizeof(puk->puk_table))
+				errx(1, "table too long: %s", killer->value);
+		} else if (!strcmp(killer->value, "id")) {
+			if (mode & PF_KILL_STATES) {
+				warnx ("Only states can be killed by id, not source nodes");
+				usage();
+			}
+			if (puk->puk_pfcmp.id) {
+				warnx ("Only one id can be specified with -K/-k");
+				usage();
+			}
+			killer = STAILQ_NEXT(killer, entry);
+			if (killer==NULL) {
+				warnx ("-K/-k id requires another -K/-k with id");
+				usage();
+			}
+			if ((sscanf(killer->value, "%jx/%x",
+			    &puk->puk_pfcmp.id,
+			    &puk->puk_pfcmp.creatorid)) == 2)
+				HTONL(puk->puk_pfcmp.creatorid);
+			else if ((sscanf(killer->value, "%jx",
+			    &puk->puk_pfcmp.id)) == 1) {
+				puk->puk_pfcmp.creatorid = 0;
+			} else {
+				warnx("wrong id format specified");
+				usage();
+			}
+			if (puk->puk_pfcmp.id == 0) {
+				warnx("cannot kill id 0");
+				usage();
+			}
+		} else if (!strcmp(killer->value, "kill")) {
+			if (puk->puk_killed_states) {
+				warnx ("Only one killing option can be specified with -K/-k");
+				usage();
+			}
+			killer = STAILQ_NEXT(killer, entry);
+			if (killer==NULL) {
+				warnx ("-K/-k kill requires another -K/-k with killing option");
+				usage();
+			}
+			if (!strcmp(killer->value, "states")) {
+				if (mode & PF_KILL_STATES) {
+					warnx ("It only makes sense to kill linked states when killing source nodes");
+					usage();
+				}
+				puk->puk_killed_states = KILL_WITH_STATES;
+			} else 	if (!strcmp(killer->value, "rststates")) {
+				puk->puk_killed_states =
+				    KILL_WITH_STATES | KILL_WITH_RST;
+			} else {
+				warnx ("Unknown kill option specified");
+				usage();
+			}
+		} else {
+			/*
+			 * For backward compatibility if an unknown parameter
+			 * is given, treat is as a srchost.
+			 * If another one is given, treat it as a dsthost.
+			 */
+			if (!*srchost) {
+				*srchost = killer->value;
+				continue;
+			} else if (!*dsthost) {
+				*dsthost = killer->value;
+				continue;
+			} else {
+				warnx ("Orphaned -K/-k parameter found.");
+				usage();
+				break;
+			}
+		}
+	}
+}
+
+/*
+ * Code which is redundant both for state and src_node killing:
+ * - translation of hostnames into IP addresses
+ * - filtering out duplicates
+ * - calling sysctl for (src,dst,rdr) address tuples
+ */
+void
+pfctl_universal_kill(struct pfioc_universal_kill *puk, int mode, char *srchost,
+    char *dsthost, char* rdrhost, int *sources, int *dests, int *rdrhosts,
+    int opts)
+{
+	struct addrinfo *src_res, *src_resp;
+	struct addrinfo *dst_res, *dst_resp;
+	struct addrinfo *rdr_res, *rdr_resp;
+	struct sockaddr last_src, last_dst, last_rdr;
+	int ret_ga;
+
+	int killed_src_nodes, killed_states;
+
+	char buffer_src[256], buffer_dst[256], buffer_rdr[256];
+
+	killed_src_nodes = killed_states = 0;
+
+	/*
+	 * Parse given source, destination and redirection hosts.
+	 * If any of those is not given, prepare a dummy _res variable,
+	 * which resolves into a 0/0 host of AF_UNSPEC address family,
+	 * resulting in at least one run of related loop.
+	 */
+	if (srchost) {
+		memset(&puk->puk_src.addr.v.a.mask, 0xff,
+		    sizeof(puk->puk_src.addr.v.a.mask));
+		pfctl_addrprefix(srchost, &puk->puk_src.addr.v.a.mask);
+		if ((ret_ga = getaddrinfo(srchost, NULL, NULL, &src_res))) {
+			errx(1, "src getaddrinfo: %s", gai_strerror(ret_ga));
+		}
+	} else {
+		src_res = calloc(1, sizeof(struct addrinfo));
+		src_res->ai_addr = calloc(1, sizeof(struct sockaddr));
+		(*sources)++;
+	}
+
+	if (dsthost) {
+		memset(&puk->puk_dst.addr.v.a.mask, 0xff,
+		    sizeof(puk->puk_dst.addr.v.a.mask));
+		pfctl_addrprefix(dsthost, &puk->puk_dst.addr.v.a.mask);
+		if ((ret_ga = getaddrinfo(dsthost, NULL, NULL, &dst_res))) {
+			errx(1, "getaddrinfo: %s", gai_strerror(ret_ga));
+		}
+	} else {
+		dst_res = calloc(1, sizeof(struct addrinfo));
+		dst_res->ai_addr = calloc(1, sizeof(struct sockaddr));
+		(*dests)++;
+	}
+
+	if (rdrhost) {
+		memset(&puk->puk_rdr.addr.v.a.mask, 0xff,
+		    sizeof(puk->puk_rdr.addr.v.a.mask));
+		pfctl_addrprefix(rdrhost, &puk->puk_rdr.addr.v.a.mask);
+		if ((ret_ga = getaddrinfo(rdrhost, NULL, NULL, &rdr_res))) {
+			errx(1, "getaddrinfo: %s", gai_strerror(ret_ga));
+		}
+	} else {
+		rdr_res = calloc(1, sizeof(struct addrinfo));
+		rdr_res->ai_addr = calloc(1, sizeof(struct sockaddr));
+		(*rdrhosts)++;
+	}
+
+	/*
+	 * Loop over all source, destination and redirection hosts.
+	 * Perform ioctl for each iteration of loop.
+	 *
+	 * Hostname resolving might end up with duplicates. Catch the easy ones.
+	 *
+	 * Ensure that all addresses are of the same family or AF_UNSPEC.
+	 */
+	memset(&last_src, 0xff, sizeof(last_src));
+	for (src_resp = src_res; src_resp; src_resp = src_resp->ai_next) {
+		if (src_res->ai_addr == NULL)
+			continue;
+		if (srchost) {
+			if (memcmp(&last_src, src_resp->ai_addr,
+			    sizeof(last_src)) == 0)
+				continue;
+			last_src = *(struct sockaddr *)src_resp->ai_addr;
+
+			if (src_resp->ai_family == AF_INET)
+				puk->puk_src.addr.v.a.addr.v4 =
+				((struct sockaddr_in *)
+				src_resp->ai_addr)->sin_addr;
+			else if (src_resp->ai_family == AF_INET6)
+				puk->puk_src.addr.v.a.addr.v6 =
+				((struct sockaddr_in6 *)src_resp->ai_addr)
+				->sin6_addr;
+			else
+				errx(1, "Unknown address source family %d",
+				    src_resp->ai_family);
+			(*sources)++;
+		}
+
+		memset(&last_dst, 0xff, sizeof(last_dst));
+		for (dst_resp = dst_res; dst_resp; dst_resp = dst_resp->ai_next) {
+			if (dst_resp->ai_addr == NULL)
+				continue;
+
+			if (dsthost) {
+				if (memcmp(&last_dst, dst_resp->ai_addr,
+				    sizeof(last_dst)) == 0)
+					continue;
+				last_dst = *(struct sockaddr *)dst_resp->ai_addr;
+
+				if (dst_resp->ai_family == AF_INET)
+					puk->puk_dst.addr.v.a.addr.v4 =
+					((struct sockaddr_in *)dst_resp
+					 ->ai_addr)->sin_addr;
+				else if (dst_resp->ai_family == AF_INET6)
+					puk->puk_dst.addr.v.a.addr.v6 =
+					((struct sockaddr_in6 *)dst_resp
+					 ->ai_addr)->sin6_addr;
+				else
+					errx(1, "Unknown destination address family %d",
+					    dst_resp->ai_family);
+				(*dests)++;
+			}
+
+			memset(&last_rdr, 0xff, sizeof(last_rdr));
+			for (rdr_resp = rdr_res; rdr_resp; rdr_resp = rdr_resp->ai_next) {
+				if (rdr_resp->ai_addr == NULL)
+					continue;
+
+				if (rdrhost) {
+					if (memcmp(&last_rdr, rdr_resp->ai_addr,
+					    sizeof(last_rdr)) == 0)
+						continue;
+					last_rdr = *(struct sockaddr *)rdr_resp->ai_addr;
+
+					if (rdr_resp->ai_family == AF_INET)
+						puk->puk_rdr.addr.v.a.addr.v4 =
+						((struct sockaddr_in *)rdr_resp
+						 ->ai_addr)->sin_addr;
+					else if (rdr_resp->ai_family == AF_INET6)
+						puk->puk_rdr.addr.v.a.addr.v6 =
+						((struct sockaddr_in6 *)rdr_resp
+						 ->ai_addr)->sin6_addr;
+					else
+						errx(1, "Unknown destination address family %d",
+						    rdr_resp->ai_family);
+					(*rdrhosts)++;
+				}
+
+				memset(buffer_src, 0, sizeof(buffer_src));
+				inet_ntop(src_resp->ai_family,
+				    &puk->puk_src.addr.v.a.addr, buffer_src,
+				    sizeof(buffer_src));
+				memset(buffer_dst, 0, sizeof(buffer_dst));
+				inet_ntop(dst_resp->ai_family,
+				    &puk->puk_dst.addr.v.a.addr, buffer_dst,
+				    sizeof(buffer_dst));
+				memset(buffer_rdr, 0, sizeof(buffer_rdr));
+				inet_ntop(rdr_resp->ai_family,
+				    &puk->puk_rdr.addr.v.a.addr,
+				    buffer_rdr, sizeof(buffer_rdr));
+
+				/*
+				 * Finally after all hosts are resolved or empty
+				 * decide which protocol family are we running.
+				 */
+				if (src_resp->ai_family)
+					puk->puk_af = src_resp->ai_family;
+				else if (dst_resp->ai_family)
+					puk->puk_af = dst_resp->ai_family;
+				else if (rdr_resp->ai_family)
+					puk->puk_af = rdr_resp->ai_family;
+
+				/*
+				 * All other hosts in current tuple must follow
+				 * the found one or be 0 (AF_UNSPEC).
+				 */
+				if ((src_resp->ai_family &&
+				     src_resp->ai_family != puk->puk_af) ||
+				    (dst_resp->ai_family &&
+				     dst_resp->ai_family != puk->puk_af) ||
+				    (rdr_resp->ai_family &&
+				     rdr_resp->ai_family != puk->puk_af)) {
+					if (opts & PF_OPT_VERBOSE)
+						printf ("skipping kill src: %s/%u, dst: %s/%u, rdr: %s/%u due to different protocol families \n",
+							buffer_src, unmask(&puk->puk_src.addr.v.a.mask, src_resp->ai_family),
+							buffer_dst, unmask(&puk->puk_dst.addr.v.a.mask, dst_resp->ai_family),
+							buffer_rdr, unmask(&puk->puk_rdr.addr.v.a.mask, rdr_resp->ai_family));
+
+					continue;
+				}
+
+				if (opts & PF_OPT_VERBOSE) {
+					printf ("performing kill src: %s/%u, dst: %s/%u, rdr: %s/%u, family: %d\n",
+						buffer_src, unmask(&puk->puk_src.addr.v.a.mask, src_resp->ai_family),
+						buffer_dst, unmask(&puk->puk_dst.addr.v.a.mask, dst_resp->ai_family),
+						buffer_rdr, unmask(&puk->puk_rdr.addr.v.a.mask, rdr_resp->ai_family),
+						puk->puk_af);
+				}
+
+				if (mode == PF_KILL_SRC_NODES) {
+					if (ioctl(dev, DIOCUKILLSRCNODES, puk))
+						err(1, "DIOCUKILLSRCNODES");
+					killed_states +=
+					    puk->puk_killed_states;
+					killed_src_nodes +=
+					    puk->puk_killed_src_nodes;
+				}
+
+				if (mode == PF_KILL_STATES) {
+					if (ioctl(dev, DIOCUKILLSTATES, puk))
+						err(1, "DIOCUKILLSTATES");
+					killed_states += puk->puk_killed_states;
+				}
+			}
+		}
+	}
+
+	puk->puk_killed_states    = killed_states;
+	puk->puk_killed_src_nodes = killed_src_nodes;
+
+	freeaddrinfo(src_res);
+	freeaddrinfo(dst_res);
+	freeaddrinfo(rdr_res);
+}
+
+int
+pfctl_kill_states(int dev, const char *iface, int opts)
+{
+	struct pfioc_universal_kill puk;
+	int orig_kill_states;
+
+	char *srchost, *dsthost, *rdrhost;
+	srchost = dsthost = rdrhost = NULL;
+
+	int sources, dests, rdrhosts;
+	sources = dests = rdrhosts = 0;
+
+	memset(&puk, 0, sizeof(struct pfioc_universal_kill));
+
+	pfctl_parse_killer_opts(&state_killers, &puk, PF_KILL_STATES,
+	    &srchost, &dsthost, &rdrhost);
+	orig_kill_states  = puk.puk_killed_states;
+
+	if (iface != NULL && strlcpy(puk.puk_ifname, iface,
+	    sizeof(puk.puk_ifname)) >= sizeof(puk.puk_ifname))
+		errx(1, "invalid interface: %s", iface);
+
+	pfctl_universal_kill(&puk, PF_KILL_STATES, srchost, dsthost, rdrhost,
+	    &sources, &dests, &rdrhosts, opts);
+
+	if ((opts & PF_OPT_QUIET) == 0) {
+		fprintf(stderr, "killed %d states from %d sources to %d destinations",
+		    puk.puk_killed_states, sources, dests);
+		if (rdrhost)
+			fprintf(stderr, " via %d redirection targets", rdrhosts);
+		if (orig_kill_states & KILL_WITH_RST)
+			fprintf(stderr, " with RST injection");
+		fprintf(stderr, "\n");
+	}
+	return (0);
+}
+
 int
 pfctl_kill_src_nodes(int dev, const char *iface, int opts)
 {
-	struct pfioc_src_node_kill psnk;
-	struct addrinfo *res[2], *resp[2];
-	struct sockaddr last_src, last_dst;
-	int killed, sources, dests;
-	int ret_ga;
-
-	killed = sources = dests = 0;
-
-	memset(&psnk, 0, sizeof(psnk));
-	memset(&psnk.psnk_src.addr.v.a.mask, 0xff,
-	    sizeof(psnk.psnk_src.addr.v.a.mask));
-	memset(&last_src, 0xff, sizeof(last_src));
-	memset(&last_dst, 0xff, sizeof(last_dst));
-
-	pfctl_addrprefix(src_node_kill[0], &psnk.psnk_src.addr.v.a.mask);
-
-	if ((ret_ga = getaddrinfo(src_node_kill[0], NULL, NULL, &res[0]))) {
-		errx(1, "getaddrinfo: %s", gai_strerror(ret_ga));
-		/* NOTREACHED */
-	}
-	for (resp[0] = res[0]; resp[0]; resp[0] = resp[0]->ai_next) {
-		if (resp[0]->ai_addr == NULL)
-			continue;
-		/* We get lots of duplicates.  Catch the easy ones */
-		if (memcmp(&last_src, resp[0]->ai_addr, sizeof(last_src)) == 0)
-			continue;
-		last_src = *(struct sockaddr *)resp[0]->ai_addr;
-
-		psnk.psnk_af = resp[0]->ai_family;
-		sources++;
-
-		if (psnk.psnk_af == AF_INET)
-			psnk.psnk_src.addr.v.a.addr.v4 =
-			    ((struct sockaddr_in *)resp[0]->ai_addr)->sin_addr;
-		else if (psnk.psnk_af == AF_INET6)
-			psnk.psnk_src.addr.v.a.addr.v6 =
-			    ((struct sockaddr_in6 *)resp[0]->ai_addr)->
-			    sin6_addr;
-		else
-			errx(1, "Unknown address family %d", psnk.psnk_af);
-
-		if (src_node_killers > 1) {
-			dests = 0;
-			memset(&psnk.psnk_dst.addr.v.a.mask, 0xff,
-			    sizeof(psnk.psnk_dst.addr.v.a.mask));
-			memset(&last_dst, 0xff, sizeof(last_dst));
-			pfctl_addrprefix(src_node_kill[1],
-			    &psnk.psnk_dst.addr.v.a.mask);
-			if ((ret_ga = getaddrinfo(src_node_kill[1], NULL, NULL,
-			    &res[1]))) {
-				errx(1, "getaddrinfo: %s",
-				    gai_strerror(ret_ga));
-				/* NOTREACHED */
-			}
-			for (resp[1] = res[1]; resp[1];
-			    resp[1] = resp[1]->ai_next) {
-				if (resp[1]->ai_addr == NULL)
-					continue;
-				if (psnk.psnk_af != resp[1]->ai_family)
-					continue;
-
-				if (memcmp(&last_dst, resp[1]->ai_addr,
-				    sizeof(last_dst)) == 0)
-					continue;
-				last_dst = *(struct sockaddr *)resp[1]->ai_addr;
-
-				dests++;
-
-				if (psnk.psnk_af == AF_INET)
-					psnk.psnk_dst.addr.v.a.addr.v4 =
-					    ((struct sockaddr_in *)resp[1]->
-					    ai_addr)->sin_addr;
-				else if (psnk.psnk_af == AF_INET6)
-					psnk.psnk_dst.addr.v.a.addr.v6 =
-					    ((struct sockaddr_in6 *)resp[1]->
-					    ai_addr)->sin6_addr;
-				else
-					errx(1, "Unknown address family %d",
-					    psnk.psnk_af);
-
-				if (ioctl(dev, DIOCKILLSRCNODES, &psnk))
-					err(1, "DIOCKILLSRCNODES");
-				killed += psnk.psnk_killed;
-			}
-			freeaddrinfo(res[1]);
-		} else {
-			if (ioctl(dev, DIOCKILLSRCNODES, &psnk))
-				err(1, "DIOCKILLSRCNODES");
-			killed += psnk.psnk_killed;
-		}
-	}
-
-	freeaddrinfo(res[0]);
-
-	if ((opts & PF_OPT_QUIET) == 0)
-		fprintf(stderr, "killed %d src nodes from %d sources and %d "
-		    "destinations\n", killed, sources, dests);
-	return (0);
-}
-
-int
-pfctl_net_kill_states(int dev, const char *iface, int opts)
-{
-	struct pfioc_state_kill psk;
-	struct addrinfo *res[2], *resp[2];
-	struct sockaddr last_src, last_dst;
-	int killed, sources, dests;
-	int ret_ga;
-
-	killed = sources = dests = 0;
-
-	memset(&psk, 0, sizeof(psk));
-	memset(&psk.psk_src.addr.v.a.mask, 0xff,
-	    sizeof(psk.psk_src.addr.v.a.mask));
-	memset(&last_src, 0xff, sizeof(last_src));
-	memset(&last_dst, 0xff, sizeof(last_dst));
-	if (iface != NULL && strlcpy(psk.psk_ifname, iface,
-	    sizeof(psk.psk_ifname)) >= sizeof(psk.psk_ifname))
-		errx(1, "invalid interface: %s", iface);
-
-	pfctl_addrprefix(state_kill[0], &psk.psk_src.addr.v.a.mask);
-
-	if ((ret_ga = getaddrinfo(state_kill[0], NULL, NULL, &res[0]))) {
-		errx(1, "getaddrinfo: %s", gai_strerror(ret_ga));
-		/* NOTREACHED */
-	}
-	for (resp[0] = res[0]; resp[0]; resp[0] = resp[0]->ai_next) {
-		if (resp[0]->ai_addr == NULL)
-			continue;
-		/* We get lots of duplicates.  Catch the easy ones */
-		if (memcmp(&last_src, resp[0]->ai_addr, sizeof(last_src)) == 0)
-			continue;
-		last_src = *(struct sockaddr *)resp[0]->ai_addr;
-
-		psk.psk_af = resp[0]->ai_family;
-		sources++;
-
-		if (psk.psk_af == AF_INET)
-			psk.psk_src.addr.v.a.addr.v4 =
-			    ((struct sockaddr_in *)resp[0]->ai_addr)->sin_addr;
-		else if (psk.psk_af == AF_INET6)
-			psk.psk_src.addr.v.a.addr.v6 =
-			    ((struct sockaddr_in6 *)resp[0]->ai_addr)->
-			    sin6_addr;
-		else
-			errx(1, "Unknown address family %d", psk.psk_af);
-
-		if (state_killers > 1) {
-			dests = 0;
-			memset(&psk.psk_dst.addr.v.a.mask, 0xff,
-			    sizeof(psk.psk_dst.addr.v.a.mask));
-			memset(&last_dst, 0xff, sizeof(last_dst));
-			pfctl_addrprefix(state_kill[1],
-			    &psk.psk_dst.addr.v.a.mask);
-			if ((ret_ga = getaddrinfo(state_kill[1], NULL, NULL,
-			    &res[1]))) {
-				errx(1, "getaddrinfo: %s",
-				    gai_strerror(ret_ga));
-				/* NOTREACHED */
-			}
-			for (resp[1] = res[1]; resp[1];
-			    resp[1] = resp[1]->ai_next) {
-				if (resp[1]->ai_addr == NULL)
-					continue;
-				if (psk.psk_af != resp[1]->ai_family)
-					continue;
-
-				if (memcmp(&last_dst, resp[1]->ai_addr,
-				    sizeof(last_dst)) == 0)
-					continue;
-				last_dst = *(struct sockaddr *)resp[1]->ai_addr;
-
-				dests++;
-
-				if (psk.psk_af == AF_INET)
-					psk.psk_dst.addr.v.a.addr.v4 =
-					    ((struct sockaddr_in *)resp[1]->
-					    ai_addr)->sin_addr;
-				else if (psk.psk_af == AF_INET6)
-					psk.psk_dst.addr.v.a.addr.v6 =
-					    ((struct sockaddr_in6 *)resp[1]->
-					    ai_addr)->sin6_addr;
-				else
-					errx(1, "Unknown address family %d",
-					    psk.psk_af);
-
-				if (ioctl(dev, DIOCKILLSTATES, &psk))
-					err(1, "DIOCKILLSTATES");
-				killed += psk.psk_killed;
-			}
-			freeaddrinfo(res[1]);
-		} else {
-			if (ioctl(dev, DIOCKILLSTATES, &psk))
-				err(1, "DIOCKILLSTATES");
-			killed += psk.psk_killed;
-		}
-	}
-
-	freeaddrinfo(res[0]);
-
-	if ((opts & PF_OPT_QUIET) == 0)
-		fprintf(stderr, "killed %d states from %d sources and %d "
-		    "destinations\n", killed, sources, dests);
-	return (0);
-}
-
-int
-pfctl_label_kill_states(int dev, const char *iface, int opts)
-{
-	struct pfioc_state_kill psk;
-
-	if (state_killers != 2 || (strlen(state_kill[1]) == 0)) {
-		warnx("no label specified");
-		usage();
-	}
-	memset(&psk, 0, sizeof(psk));
-	if (iface != NULL && strlcpy(psk.psk_ifname, iface,
-	    sizeof(psk.psk_ifname)) >= sizeof(psk.psk_ifname))
-		errx(1, "invalid interface: %s", iface);
-
-	if (strlcpy(psk.psk_label, state_kill[1], sizeof(psk.psk_label)) >=
-	    sizeof(psk.psk_label))
-		errx(1, "label too long: %s", state_kill[1]);
-
-	if (ioctl(dev, DIOCKILLSTATES, &psk))
-		err(1, "DIOCKILLSTATES");
-
-	if ((opts & PF_OPT_QUIET) == 0)
-		fprintf(stderr, "killed %d states\n", psk.psk_killed);
-
-	return (0);
-}
-
-int
-pfctl_id_kill_states(int dev, const char *iface, int opts)
-{
-	struct pfioc_state_kill psk;
+	struct pfioc_universal_kill puk;
+	int orig_kill_src_nodes;
 	
-	if (state_killers != 2 || (strlen(state_kill[1]) == 0)) {
-		warnx("no id specified");
-		usage();
+	char *srchost, *dsthost, *rdrhost;
+	srchost = dsthost = rdrhost = NULL;
+
+	int sources, dests, rdrhosts;
+	sources = dests = rdrhosts = 0;
+
+	memset(&puk, 0, sizeof(struct pfioc_universal_kill));
+
+	pfctl_parse_killer_opts(&src_node_killers, &puk, PF_KILL_SRC_NODES,
+	    &srchost, &dsthost, &rdrhost);
+	orig_kill_src_nodes = puk.puk_killed_src_nodes;
+
+	pfctl_universal_kill(&puk, PF_KILL_SRC_NODES, srchost, dsthost, rdrhost,
+	    &sources, &dests, &rdrhosts, opts);
+
+	if ((opts & PF_OPT_QUIET) == 0) {
+		fprintf(stderr, "killed %d src nodes and %d linked states "
+		    "from %d sources to %d destinations",
+		    puk.puk_killed_src_nodes, puk.puk_killed_states, sources, dests);
+		if (orig_kill_src_nodes & KILL_WITH_STATES)
+			fprintf (stderr, " with state kill");
+		if (orig_kill_src_nodes & KILL_WITH_RST)
+			fprintf (stderr, " and RST injection");
+		fprintf(stderr, "\n");
 	}
-
-	memset(&psk, 0, sizeof(psk));
-	if ((sscanf(state_kill[1], "%jx/%x",
-	    &psk.psk_pfcmp.id, &psk.psk_pfcmp.creatorid)) == 2)
-		HTONL(psk.psk_pfcmp.creatorid);
-	else if ((sscanf(state_kill[1], "%jx", &psk.psk_pfcmp.id)) == 1) {
-		psk.psk_pfcmp.creatorid = 0;
-	} else {
-		warnx("wrong id format specified");
-		usage();
-	}
-	if (psk.psk_pfcmp.id == 0) {
-		warnx("cannot kill id 0");
-		usage();
-	}
-
-	psk.psk_pfcmp.id = htobe64(psk.psk_pfcmp.id);
-	if (ioctl(dev, DIOCKILLSTATES, &psk))
-		err(1, "DIOCKILLSTATES");
-
-	if ((opts & PF_OPT_QUIET) == 0)
-		fprintf(stderr, "killed %d states\n", psk.psk_killed);
-
 	return (0);
 }
 
@@ -1994,9 +2173,14 @@ main(int argc, char *argv[])
 	int	 optimize = PF_OPTIMIZE_BASIC;
 	char	 anchorname[MAXPATHLEN];
 	char	*path;
+	struct killer_entry *new_state_killer;
+	struct killer_entry *new_src_node_killer;
 
 	if (argc < 2)
 		usage();
+
+	STAILQ_INIT(&state_killers);
+	STAILQ_INIT(&src_node_killers);
 
 	while ((ch = getopt(argc, argv,
 	    "a:AdD:eqf:F:ghi:k:K:mnNOo:Pp:rRs:t:T:vx:z")) != -1) {
@@ -2032,21 +2216,19 @@ main(int argc, char *argv[])
 			ifaceopt = optarg;
 			break;
 		case 'k':
-			if (state_killers >= 2) {
-				warnx("can only specify -k twice");
-				usage();
-				/* NOTREACHED */
-			}
-			state_kill[state_killers++] = optarg;
+			new_state_killer = calloc(1, sizeof(struct killer_entry));
+			if (new_state_killer == NULL)
+				err(1, "calloc");
+			new_state_killer->value = optarg;
+			STAILQ_INSERT_TAIL(&state_killers, new_state_killer, entry);
 			mode = O_RDWR;
 			break;
 		case 'K':
-			if (src_node_killers >= 2) {
-				warnx("can only specify -K twice");
-				usage();
-				/* NOTREACHED */
-			}
-			src_node_kill[src_node_killers++] = optarg;
+			new_src_node_killer = calloc(1, sizeof(struct killer_entry));
+			if (new_src_node_killer == NULL)
+				err(1, "calloc");
+			new_src_node_killer->value = optarg;
+			STAILQ_INSERT_TAIL(&src_node_killers, new_src_node_killer, entry);
 			mode = O_RDWR;
 			break;
 		case 'm':
@@ -2309,16 +2491,11 @@ main(int argc, char *argv[])
 			break;
 		}
 	}
-	if (state_killers) {
-		if (!strcmp(state_kill[0], "label"))
-			pfctl_label_kill_states(dev, ifaceopt, opts);
-		else if (!strcmp(state_kill[0], "id"))
-			pfctl_id_kill_states(dev, ifaceopt, opts);
-		else
-			pfctl_net_kill_states(dev, ifaceopt, opts);
-	}
 
-	if (src_node_killers)
+	if (!STAILQ_EMPTY(&state_killers))
+		pfctl_kill_states(dev, ifaceopt, opts);
+
+	if (!STAILQ_EMPTY(&src_node_killers))
 		pfctl_kill_src_nodes(dev, ifaceopt, opts);
 
 	if (tblcmdopt != NULL) {

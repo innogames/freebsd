@@ -60,6 +60,9 @@
 #define PF_OPTIMIZE_BASIC	0x0001
 #define PF_OPTIMIZE_PROFILE	0x0002
 
+#define PF_KILL_STATES		0x0001
+#define PF_KILL_SRC_NODES	0x0002
+
 #define FCNT_NAMES { \
 	"searches", \
 	"inserts", \
