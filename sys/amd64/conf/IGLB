@@ -22,7 +22,7 @@
 # MODULES_OVERRIDE=pf if_lagg ipmi pfsync pflog if_gre nullfs linux carp crypto hwpmc cc/cc_cdg cc/cc_chd cc/cc_cubic cc/cc_hd cc/cc_htcp cc/cc_vegas aesni
 
 cpu		HAMMER
-ident		StarshipTitanic11
+ident		OneMoreTime
 
 # IPsec is needed on our routers and on some HWLBs
 options		IPSEC
