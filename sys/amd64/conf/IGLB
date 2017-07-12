@@ -21,7 +21,7 @@
 # Compile it with the following line in /etc/make.conf
 
 cpu		HAMMER
-ident		JustAFleshWound_2
+ident		JustAFleshWound_3
 
 makeoptions MODULES_OVERRIDE="pf if_lagg ipmi pfsync pflog if_gre nullfs linux carp crypto hwpmc cc/cc_cdg cc/cc_chd cc/cc_cubic cc/cc_hd cc/cc_htcp cc/cc_vegas aesni opensolaris dtrace krpc ksyms ichwd"
 
