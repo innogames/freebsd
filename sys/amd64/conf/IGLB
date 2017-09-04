@@ -19,16 +19,18 @@
 # $FreeBSD$
 
 # Compile it with the following line in /etc/make.conf
-# MODULES_OVERRIDE=pf if_lagg ipmi pfsync pflog if_gre nullfs linux carp crypto hwpmc cc/cc_cdg cc/cc_chd cc/cc_cubic cc/cc_hd cc/cc_htcp cc/cc_vegas aesni
+makeoptions MODULES_OVERRIDE="pf if_lagg ipmi pfsync pflog if_gre nullfs linux carp crypto hwpmc cc/cc_cdg cc/cc_chd cc/cc_cubic cc/cc_hd cc/cc_htcp cc/cc_vegas aesni opensolaris dtrace krpc ksyms ichwd linprocfs tmpfs"
+
 
 cpu		HAMMER
-ident		OneMoreTime
+ident		OneMoreTime_2
 
 # IPsec is needed on our routers and on some HWLBs
 options		IPSEC
 options		TCP_SIGNATURE
 device		crypto
 device		cryptodev
+device		enc
 
 device		netmap
 
