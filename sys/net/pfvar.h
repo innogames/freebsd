@@ -612,6 +612,7 @@ struct pf_rule {
 /* rule flags again */
 #define PFRULE_IFBOUND		0x00010000	/* if-bound */
 #define PFRULE_STATESLOPPY	0x00020000	/* sloppy state tracking */
+#define PFRULE_FAILRETURN	0x00040000	/* return on failed rules */
 
 #define PFSTATE_HIWAT		10000	/* default state table size */
 #define PFSTATE_ADAPT_START	6000	/* default adaptive timeout start */
