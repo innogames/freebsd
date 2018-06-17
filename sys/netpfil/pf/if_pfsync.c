@@ -511,6 +511,23 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 		st->expire -= timeout - ntohl(sp->expire);
 	}
 
+        /* reconstruct rt_kif from rule for round-robin redirection */
+        st->rt_kif = NULL;
+        if (
+	    r != &V_pf_default_rule &&
+	    (r->rpool.opts & PF_POOL_TYPEMASK ) == PF_POOL_ROUNDROBIN
+	) {
+		struct pf_pooladdr *acur;
+		TAILQ_FOREACH(acur, &(r->rpool.list), entries) {
+			if (
+			    acur->addr.type == PF_ADDR_TABLE &&
+			    pfr_match_addr(acur->addr.p.tbl, &st->rt_addr,
+				skw->af)
+			)
+				st->rt_kif = acur->kif;
+		};
+        };
+
 	st->direction = sp->direction;
 	st->log = sp->log;
 	st->timeout = sp->timeout;
@@ -524,7 +541,6 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 	st->rule.ptr = r;
 	st->nat_rule.ptr = NULL;
 	st->anchor.ptr = NULL;
-	st->rt_kif = NULL;
 
 	st->pfsync_time = time_uptime;
 	st->sync_state = PFSYNC_S_NONE;
@@ -865,7 +881,7 @@ pfsync_in_upd(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
 		st = pf_find_state_byid(sp->id, sp->creatorid);
 		if (st == NULL) {
 			/* insert the update */
-			if (pfsync_state_import(sp, 0))
+			if (pfsync_state_import(sp, pkt->flags))
 				V_pfsyncstats.pfsyncs_badstate++;
 			continue;
 		}
