@@ -3740,6 +3740,7 @@ pf_create_state(struct pf_rule *r, struct pf_rule *nr, struct pf_rule *a,
 			goto csfailed;
 		}
 		s->rt_kif = r->rpool.cur->kif;
+		s->rt = r->rt;
 	}
 
 	s->creation = time_uptime;
@@ -5511,7 +5512,7 @@ pf_routable(struct pf_addr *addr, sa_family_t af, struct pfi_kif *kif,
 
 #ifdef INET
 static void
-pf_route(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
+pf_route(struct mbuf **m, struct pf_rule * r, int p_dir, struct ifnet *oifp,
     struct pf_state *s, struct pf_pdesc *pd, struct inpcb *inp)
 {
 	struct mbuf		*m0, *m1;
@@ -5522,9 +5523,20 @@ pf_route(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 	struct pf_src_node	*sn = NULL;
 	int			 error = 0;
 	uint16_t		 ip_len, ip_off;
+	int			 r_rt, r_dir;
 
 	KASSERT(m && *m && r && oifp, ("%s: invalid parameters", __func__));
-	KASSERT(dir == PF_IN || dir == PF_OUT, ("%s: invalid direction",
+
+	if (s) {
+		r_rt = s->rt;
+		r_dir = s->direction;
+	} else {
+		r_rt = r->rt;
+		r_dir = r->direction;
+	}
+
+	KASSERT(p_dir == PF_IN || p_dir == PF_OUT ||
+	    r_dir == PF_IN || r_dir == PF_OUT, ("%s: invalid direction",
 	    __func__));
 
 	if ((pd->pf_mtag == NULL &&
@@ -5535,14 +5547,14 @@ pf_route(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 		goto bad_locked;
 	}
 
-	if (r->rt == PF_DUPTO) {
+	if (r_rt == PF_DUPTO) {
 		if ((m0 = m_dup(*m, M_NOWAIT)) == NULL) {
 			if (s)
 				PF_STATE_UNLOCK(s);
 			return;
 		}
 	} else {
-		if ((r->rt == PF_REPLYTO) == (r->direction == dir)) {
+		if ((r_rt == PF_REPLYTO) == (r_dir == p_dir)) {
 			if (s)
 				PF_STATE_UNLOCK(s);
 			return;
@@ -5559,12 +5571,12 @@ pf_route(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 
 	bzero(&naddr, sizeof(naddr));
 
-	if (TAILQ_EMPTY(&r->rpool.list)) {
-		DPFPRINTF(PF_DEBUG_URGENT,
-		    ("%s: TAILQ_EMPTY(&r->rpool.list)\n", __func__));
-		goto bad_locked;
-	}
 	if (s == NULL) {
+		if (TAILQ_EMPTY(&r->rpool.list)) {
+			DPFPRINTF(PF_DEBUG_URGENT,
+			("%s: TAILQ_EMPTY(&r->rpool.list)\n", __func__));
+			goto bad_locked;
+		}
 		pf_map_addr(AF_INET, r, (struct pf_addr *)&ip->ip_src,
 		    &naddr, NULL, &sn);
 		if (!PF_AZERO(&naddr, AF_INET))
@@ -5633,7 +5645,7 @@ pf_route(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 	if ((ip_off & IP_DF) || (m0->m_pkthdr.csum_flags & CSUM_TSO)) {
 		error = EMSGSIZE;
 		KMOD_IPSTAT_INC(ips_cantfrag);
-		if (r->rt != PF_DUPTO) {
+		if (r_rt != PF_DUPTO) {
 			icmp_error(m0, ICMP_UNREACH, ICMP_UNREACH_NEEDFRAG, 0,
 			    ifp->if_mtu);
 			goto done;
@@ -5659,7 +5671,7 @@ pf_route(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 		KMOD_IPSTAT_INC(ips_fragmented);
 
 done:
-	if (r->rt != PF_DUPTO)
+	if (r_rt != PF_DUPTO)
 		*m = NULL;
 	return;
 
@@ -5674,7 +5686,7 @@ bad:
 
 #ifdef INET6
 static void
-pf_route6(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
+pf_route6(struct mbuf **m, struct pf_rule * r, int p_dir, struct ifnet *oifp,
     struct pf_state *s, struct pf_pdesc *pd, struct inpcb *inp)
 {
 	struct mbuf		*m0;
@@ -5683,9 +5695,20 @@ pf_route6(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 	struct ifnet		*ifp = NULL;
 	struct pf_addr		 naddr;
 	struct pf_src_node	*sn = NULL;
+	int 			 r_rt, r_dir;
 
 	KASSERT(m && *m && r && oifp, ("%s: invalid parameters", __func__));
-	KASSERT(dir == PF_IN || dir == PF_OUT, ("%s: invalid direction",
+
+	if (s) {
+		r_rt = s->rt;
+		r_dir = s->direction;
+	} else {
+		r_rt = r->rt;
+		r_dir = r->direction;
+	}
+
+	KASSERT(p_dir == PF_IN || p_dir == PF_OUT ||
+	    r_dir == PF_IN || r_dir == PF_OUT, ("%s: invalid direction",
 	    __func__));
 
 	if ((pd->pf_mtag == NULL &&
@@ -5696,14 +5719,14 @@ pf_route6(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 		goto bad_locked;
 	}
 
-	if (r->rt == PF_DUPTO) {
+	if (r_rt == PF_DUPTO) {
 		if ((m0 = m_dup(*m, M_NOWAIT)) == NULL) {
 			if (s)
 				PF_STATE_UNLOCK(s);
 			return;
 		}
 	} else {
-		if ((r->rt == PF_REPLYTO) == (r->direction == dir)) {
+		if ((r_rt == PF_REPLYTO) == (r_dir == p_dir)) {
 			if (s)
 				PF_STATE_UNLOCK(s);
 			return;
@@ -5720,12 +5743,12 @@ pf_route6(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 
 	bzero(&naddr, sizeof(naddr));
 
-	if (TAILQ_EMPTY(&r->rpool.list)) {
-		DPFPRINTF(PF_DEBUG_URGENT,
-		    ("%s: TAILQ_EMPTY(&r->rpool.list)\n", __func__));
-		goto bad_locked;
-	}
 	if (s == NULL) {
+		if (TAILQ_EMPTY(&r->rpool.list)) {
+			DPFPRINTF(PF_DEBUG_URGENT,
+			    ("%s: TAILQ_EMPTY(&r->rpool.list)\n", __func__));
+			goto bad_locked;
+		}
 		pf_map_addr(AF_INET6, r, (struct pf_addr *)&ip6->ip6_src,
 		    &naddr, NULL, &sn);
 		if (!PF_AZERO(&naddr, AF_INET6))
@@ -5779,14 +5802,14 @@ pf_route6(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 		nd6_output_ifp(ifp, ifp, m0, &dst, NULL);
 	else {
 		in6_ifstat_inc(ifp, ifs6_in_toobig);
-		if (r->rt != PF_DUPTO)
+		if (r_rt != PF_DUPTO)
 			icmp6_error(m0, ICMP6_PACKET_TOO_BIG, 0, ifp->if_mtu);
 		else
 			goto bad;
 	}
 
 done:
-	if (r->rt != PF_DUPTO)
+	if (r_rt != PF_DUPTO)
 		*m = NULL;
 	return;
 
@@ -6309,7 +6332,7 @@ done:
 		break;
 	default:
 		/* pf_route() returns unlocked. */
-		if (r->rt) {
+		if (r->rt || (s != NULL && s->rt)) {
 			pf_route(m0, r, dir, kif->pfik_ifp, s, &pd, inp);
 			return (action);
 		}
@@ -6706,7 +6729,7 @@ done:
 		break;
 	default:
 		/* pf_route6() returns unlocked. */
-		if (r->rt) {
+		if (r->rt || (s != NULL && s->rt)) {
 			pf_route6(m0, r, dir, kif->pfik_ifp, s, &pd, inp);
 			return (action);
 		}
