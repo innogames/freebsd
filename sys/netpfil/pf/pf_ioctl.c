@@ -3495,6 +3495,7 @@ pfsync_state_export(struct pfsync_state *sp, struct pf_state *st)
 	sp->log = st->log;
 	sp->timeout = st->timeout;
 	sp->state_flags = st->state_flags;
+	sp->rt = st->rt;
 	if (st->src_node)
 		sp->sync_flags |= PFSYNC_FLAG_SRCNODE;
 	if (st->nat_src_node)

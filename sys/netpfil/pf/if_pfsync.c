@@ -99,6 +99,13 @@ __FBSDID("$FreeBSD$");
 #include <netinet/tcp_fsm.h>
 #include <netinet/tcp_seq.h>
 
+#ifdef INET
+#include <netinet/in_fib.h>
+#endif
+#ifdef INET6
+#include <netinet6/in6_fib.h>
+#endif
+
 #define PFSYNC_MINPKT ( \
 	sizeof(struct ip) + \
 	sizeof(struct pfsync_header) + \
@@ -412,6 +419,12 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 	struct pf_rule *r = NULL;
 	struct pfi_kif	*kif;
 	int error;
+#ifdef INET
+	struct nhop4_basic nh4;
+#endif
+#ifdef INET6
+	struct nhop6_basic nh6;
+#endif
 
 	PF_RULES_RASSERT();
 
@@ -515,6 +528,7 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 	st->log = sp->log;
 	st->timeout = sp->timeout;
 	st->state_flags = sp->state_flags;
+	st->rt = sp->rt;
 
 	st->id = sp->id;
 	st->creatorid = sp->creatorid;
@@ -525,6 +539,24 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 	st->nat_rule.ptr = NULL;
 	st->anchor.ptr = NULL;
 	st->rt_kif = NULL;
+
+	if (st->rt) {
+		/* Do our best to reconstruct original route-to interface. */
+		switch (sp->af) {
+#ifdef INET
+			case AF_INET:
+			fib4_lookup_nh_basic(0, st->rt_addr.v4, 0, 0, &nh4);
+			st->rt_kif = pfi_kif_find(nh4.nh_ifp->if_xname);
+			break;
+#endif
+#ifdef INET6
+			case AF_INET6:
+			fib6_lookup_nh_basic(0, &(st->rt_addr.v6), 0, 0, 0, &nh6);
+			st->rt_kif = pfi_kif_find(nh6.nh_ifp->if_xname);
+			break;
+#endif
+		}
+	}
 
 	st->pfsync_time = time_uptime;
 	st->sync_state = PFSYNC_S_NONE;
