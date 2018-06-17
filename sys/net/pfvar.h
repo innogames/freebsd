@@ -750,7 +750,8 @@ struct pf_state {
 
 	/* XXX */
 	u_int8_t		 sync_updates;
-	u_int8_t		_tail[3];
+	u_int8_t		 rt;
+	u_int8_t		_tail[2];
 };
 
 /*
@@ -800,7 +801,8 @@ struct pfsync_state {
 	sa_family_t	 af;
 	u_int8_t	 proto;
 	u_int8_t	 direction;
-	u_int8_t	 __spare[2];
+	u_int8_t	 rt;
+	u_int8_t	 __spare[1];
 	u_int8_t	 log;
 	u_int8_t	 state_flags;
 	u_int8_t	 timeout;
