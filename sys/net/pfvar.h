@@ -632,7 +632,7 @@ struct pf_src_node {
 	struct pf_addr	 addr;
 	struct pf_addr	 raddr;
 	union pf_rule_ptr rule;
-	struct pfi_kif	*kif;
+//	struct pfi_kif	*kif;
 	u_int64_t	 bytes[2];
 	u_int64_t	 packets[2];
 	u_int32_t	 states;
@@ -1572,6 +1572,8 @@ pf_release_state(struct pf_state *s)
 extern struct pf_state		*pf_find_state_byid(uint64_t, uint32_t);
 extern struct pf_state		*pf_find_state_all(struct pf_state_key_cmp *,
 				    u_int, int *);
+extern int		 	 pf_insert_src_node(struct pf_src_node **,
+				    struct pf_rule *, struct pf_addr *, sa_family_t);
 extern struct pf_src_node	*pf_find_src_node(struct pf_addr *,
 				    struct pf_rule *, sa_family_t, int);
 extern void			 pf_unlink_src_node(struct pf_src_node *);

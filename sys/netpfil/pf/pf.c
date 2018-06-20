@@ -280,8 +280,6 @@ static struct pf_state	*pf_find_state(struct pfi_kif *,
 			    struct pf_state_key_cmp *, u_int);
 static int		 pf_src_connlimit(struct pf_state **);
 static void		 pf_overload_task(void *v, int pending);
-static int		 pf_insert_src_node(struct pf_src_node **,
-			    struct pf_rule *, struct pf_addr *, sa_family_t);
 static u_int		 pf_purge_expired_states(u_int, int);
 static void		 pf_purge_unlinked_rules(void);
 static int		 pf_mtag_uminit(void *, int, int);
@@ -683,7 +681,7 @@ pf_find_src_node(struct pf_addr *src, struct pf_rule *rule, sa_family_t af,
 	return (n);
 }
 
-static int
+int
 pf_insert_src_node(struct pf_src_node **sn, struct pf_rule *rule,
     struct pf_addr *src, sa_family_t af)
 {

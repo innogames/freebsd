@@ -3547,9 +3547,9 @@ pf_ukill_srcnodes(struct pfioc_universal_kill *puk)
 			      sn->rule.ptr->rpool.cur->addr.v.tblname[0] &&
 			      !strcmp(puk->puk_table, sn->rule.ptr->rpool.cur->addr.v.tblname))) &&
 			    (!puk->puk_label[0] || (sn->rule.ptr->label[0] &&
-			     !strcmp(puk->puk_label, sn->rule.ptr->label))) &&
-			    (!puk->puk_ifname[0] || !strcmp(puk->puk_ifname,
-			     sn->kif->pfik_name))
+			     !strcmp(puk->puk_label, sn->rule.ptr->label))) //&&
+			    //(!puk->puk_ifname[0] || !strcmp(puk->puk_ifname,
+			     //sn->kif->pfik_name))
 			    ) {
 				pf_unlink_src_node(sn);
 				LIST_INSERT_HEAD(&kill, sn, entry);

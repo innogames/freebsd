@@ -410,7 +410,10 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 	struct pf_state	*st = NULL;
 	struct pf_state_key *skw = NULL, *sks = NULL;
 	struct pf_rule *r = NULL;
-	struct pfi_kif	*kif;
+	struct pfi_kif *kif = NULL;
+	struct pf_src_node **sn = NULL;
+	//struct pf_srchash *sh = NULL;
+	struct pf_pooladdr *acur = NULL;
 	int error;
 
 	PF_RULES_RASSERT();
@@ -511,19 +514,6 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 		st->expire -= timeout - ntohl(sp->expire);
 	}
 
-	/* reconstruct rt_kif from rule for round-robin redirection */
-	st->rt_kif = NULL;
-	if (r != &V_pf_default_rule &&
-	    (r->rpool.opts & PF_POOL_TYPEMASK ) == PF_POOL_ROUNDROBIN) {
-		struct pf_pooladdr *acur;
-		TAILQ_FOREACH(acur, &(r->rpool.list), entries) {
-			if (acur->addr.type == PF_ADDR_TABLE &&
-			    pfr_match_addr(acur->addr.p.tbl, &st->rt_addr,
-			    skw->af))
-				st->rt_kif = acur->kif;
-		};
-	};
-
 	st->direction = sp->direction;
 	st->log = sp->log;
 	st->timeout = sp->timeout;
@@ -546,6 +536,36 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 
 	if ((error = pf_state_insert(kif, skw, sks, st)) != 0)
 		goto cleanup_state;
+
+	/* reconstruct rt_kif from rule for round-robin redirection */
+	st->rt_kif = NULL;
+	if (r != &V_pf_default_rule &&
+	    (r->rpool.opts & PF_POOL_TYPEMASK ) == PF_POOL_ROUNDROBIN) {
+		TAILQ_FOREACH(acur, &(r->rpool.list), entries) {
+			if (acur->addr.type == PF_ADDR_TABLE &&
+			    pfr_match_addr(acur->addr.p.tbl, &st->rt_addr,
+			    skw->af))
+				st->rt_kif = acur->kif;
+		};
+
+		if (r->rule_flag & PFRULE_SRCTRACK ||
+		    r->rpool.opts & PF_POOL_STICKYADDR) {
+			int srcidx = st->direction == PF_IN ? 1 : 0 ;
+			struct pf_addr *src = &skw->addr[srcidx];
+			pf_insert_src_node(sn, r, src, skw->af);
+			PF_ACPY(&(*sn)->raddr, &st->rt_addr, skw->af);
+//			if (*sn != NULL) {
+//				/* Inserting node returns it unlocked,
+//				   it must be found and locked again. */
+//				*sn = pf_find_src_node(src, r, skw->af, 1);
+//				if (*sn != NULL && !PF_AZERO(&(*sn)->raddr, skw->af)) {
+//					sh = &V_pf_srchash[pf_hashsrc(&sn->addr, skw->af)];
+//
+//					PF_HASHROW_UNLOCK(sh);
+//				}
+//			}
+		}
+	}
 
 	/* XXX when we have nat_rule/anchors, use STATE_INC_COUNTERS */
 	counter_u64_add(r->states_cur, 1);
