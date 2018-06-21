@@ -632,7 +632,7 @@ struct pf_src_node {
 	struct pf_addr	 addr;
 	struct pf_addr	 raddr;
 	union pf_rule_ptr rule;
-//	struct pfi_kif	*kif;
+	struct pfi_kif	*rt_kif;
 	u_int64_t	 bytes[2];
 	u_int64_t	 packets[2];
 	u_int32_t	 states;
@@ -642,6 +642,7 @@ struct pf_src_node {
 	u_int32_t	 expire;
 	sa_family_t	 af;
 	u_int8_t	 ruletype;
+	struct pf_srchash *sh;
 };
 
 #define PFSNODE_HIWAT		10000	/* default source node table size */
@@ -1575,7 +1576,7 @@ extern struct pf_state		*pf_find_state_all(struct pf_state_key_cmp *,
 extern int		 	 pf_insert_src_node(struct pf_src_node **,
 				    struct pf_rule *, struct pf_addr *, sa_family_t);
 extern struct pf_src_node	*pf_find_src_node(struct pf_addr *,
-				    struct pf_rule *, sa_family_t, int);
+				    struct pf_rule *, sa_family_t);
 extern void			 pf_unlink_src_node(struct pf_src_node *);
 extern u_int			 pf_free_src_nodes(struct pf_src_node_list *);
 extern void			 pf_print_state(struct pf_state *);

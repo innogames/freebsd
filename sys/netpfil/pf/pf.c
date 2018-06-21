@@ -657,11 +657,10 @@ pf_overload_task(void *v, int pending)
  * allocate and insert a new one.
  */
 struct pf_src_node *
-pf_find_src_node(struct pf_addr *src, struct pf_rule *rule, sa_family_t af,
-	int returnlocked)
+pf_find_src_node(struct pf_addr *src, struct pf_rule *rule, sa_family_t af)
 {
-	struct pf_srchash *sh;
 	struct pf_src_node *n;
+	struct pf_srchash *sh;
 
 	counter_u64_add(V_pf_status.scounters[SCNT_SRC_NODE_SEARCH], 1);
 
@@ -672,11 +671,6 @@ pf_find_src_node(struct pf_addr *src, struct pf_rule *rule, sa_family_t af,
 		    ((af == AF_INET && n->addr.v4.s_addr == src->v4.s_addr) ||
 		    (af == AF_INET6 && bcmp(&n->addr, src, sizeof(*src)) == 0)))
 			break;
-	if (n != NULL) {
-		n->states++;
-		PF_HASHROW_UNLOCK(sh);
-	} else if (returnlocked == 0)
-		PF_HASHROW_UNLOCK(sh);
 
 	return (n);
 }
@@ -685,17 +679,16 @@ int
 pf_insert_src_node(struct pf_src_node **sn, struct pf_rule *rule,
     struct pf_addr *src, sa_family_t af)
 {
+	struct pf_srchash *sh;
 
 	KASSERT((rule->rule_flag & PFRULE_RULESRCTRACK ||
 	    rule->rpool.opts & PF_POOL_STICKYADDR),
 	    ("%s for non-tracking rule %p", __func__, rule));
 
 	if (*sn == NULL)
-		*sn = pf_find_src_node(src, rule, af, 1);
+		*sn = pf_find_src_node(src, rule, af);
 
 	if (*sn == NULL) {
-		struct pf_srchash *sh = &V_pf_srchash[pf_hashsrc(src, af)];
-
 		PF_HASHROW_ASSERT(sh);
 
 		if (!rule->max_src_nodes ||
@@ -712,7 +705,7 @@ pf_insert_src_node(struct pf_src_node **sn, struct pf_rule *rule,
 		pf_init_threshold(&(*sn)->conn_rate,
 		    rule->max_src_conn_rate.limit,
 		    rule->max_src_conn_rate.seconds);
-
+		(*sn)->sh = sh;
 		(*sn)->af = af;
 		(*sn)->rule.ptr = rule;
 		PF_ACPY(&(*sn)->addr, src, af);
@@ -722,13 +715,13 @@ pf_insert_src_node(struct pf_src_node **sn, struct pf_rule *rule,
 		(*sn)->states = 1;
 		if ((*sn)->rule.ptr != NULL)
 			counter_u64_add((*sn)->rule.ptr->src_nodes, 1);
-		PF_HASHROW_UNLOCK(sh);
 		counter_u64_add(V_pf_status.scounters[SCNT_SRC_NODE_INSERT], 1);
 	} else {
 		if (rule->max_src_states &&
 		    (*sn)->states >= rule->max_src_states) {
 			counter_u64_add(V_pf_status.lcounters[LCNT_SRCSTATES],
 			    1);
+			PF_HASHROW_UNLOCK(sh);
 			return (-1);
 		}
 	}
@@ -3684,13 +3677,17 @@ pf_create_state(struct pf_rule *r, struct pf_rule *nr, struct pf_rule *a,
 	s->creation = time_uptime;
 	s->expire = time_uptime;
 
-	if (sn != NULL)
+	if (sn != NULL) {
 		s->src_node = sn;
+		sn->states++;
+	}
 	if (nsn != NULL) {
 		/* XXX We only modify one side for now. */
 		PF_ACPY(&nsn->raddr, &nk->addr[1], pd->af);
 		s->nat_src_node = nsn;
 	}
+	/* the last place where elements of node are modified */
+	PF_HASHROW_UNLOCK(sh);
 	if (pd->proto == IPPROTO_TCP) {
 		if ((pd->flags & PFDESC_TCP_NORM) && pf_normalize_tcp_init(m,
 		    off, pd, th, &s->src, &s->dst)) {

@@ -47,6 +47,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/rwlock.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
+#include <sys/mutex.h>
 
 #include <net/if.h>
 #include <net/vnet.h>
@@ -314,7 +315,7 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 	   is a sticky-address rule. */
 	if (*sn == NULL && r->rpool.opts & PF_POOL_STICKYADDR &&
 	    (r->rpool.opts & PF_POOL_TYPEMASK) != PF_POOL_NONE)
-		*sn = pf_find_src_node(saddr, r, af, 0);
+		*sn = pf_find_src_node(saddr, r, af);
 
 	/* If a src_node was found or explicitly given and it has a non-zero
 	   route address, use this address. A zeroed address is found if the
@@ -329,13 +330,14 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 			pf_print_host(naddr, 0, af);
 			printf("\n");
 		}
+		PF_HASHROW_UNLOCK((*sn)->sh);
 		return (0);
 	}
 
 	/* Find the route using chosen algorithm. Store the found route
 	   in src_node if it was given or found. */
 	if (rpool->cur->addr.type == PF_ADDR_NOROUTE)
-		return (1);
+		goto mapfailed;
 	if (rpool->cur->addr.type == PF_ADDR_DYNIFTL) {
 		switch (af) {
 #ifdef INET
@@ -343,7 +345,7 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 			if (rpool->cur->addr.p.dyn->pfid_acnt4 < 1 &&
 			    (rpool->opts & PF_POOL_TYPEMASK) !=
 			    PF_POOL_ROUNDROBIN)
-				return (1);
+				goto mapfailed;
 			 raddr = &rpool->cur->addr.p.dyn->pfid_addr4;
 			 rmask = &rpool->cur->addr.p.dyn->pfid_mask4;
 			break;
@@ -353,7 +355,7 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 			if (rpool->cur->addr.p.dyn->pfid_acnt6 < 1 &&
 			    (rpool->opts & PF_POOL_TYPEMASK) !=
 			    PF_POOL_ROUNDROBIN)
-				return (1);
+				goto mapfailed;
 			raddr = &rpool->cur->addr.p.dyn->pfid_addr6;
 			rmask = &rpool->cur->addr.p.dyn->pfid_mask6;
 			break;
@@ -361,7 +363,7 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 		}
 	} else if (rpool->cur->addr.type == PF_ADDR_TABLE) {
 		if ((rpool->opts & PF_POOL_TYPEMASK) != PF_POOL_ROUNDROBIN)
-			return (1); /* unsupported */
+			goto mapfailed; /* unsupported */
 	} else {
 		raddr = &rpool->cur->addr.v.a.addr;
 		rmask = &rpool->cur->addr.v.a.mask;
@@ -469,7 +471,7 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 				/* table contains no address of type 'af' */
 				if (rpool->cur != acur)
 					goto try_next;
-				return (1);
+				goto mapfailed;
 			}
 		} else if (rpool->cur->addr.type == PF_ADDR_DYNIFTL) {
 			rpool->tblidx = -1;
@@ -478,7 +480,7 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 				/* table contains no address of type 'af' */
 				if (rpool->cur != acur)
 					goto try_next;
-				return (1);
+				goto mapfailed;
 			}
 		} else {
 			raddr = &rpool->cur->addr.v.a.addr;
@@ -504,7 +506,13 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 		printf("\n");
 	}
 
+	PF_HASHROW_UNLOCK((*sn)->sh);
 	return (0);
+
+mapfailed:
+	if (*sn != NULL)
+		PF_HASHROW_UNLOCK((*sn)->sh);
+	return (1);
 }
 
 struct pf_rule *
