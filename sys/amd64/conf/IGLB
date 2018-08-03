@@ -88,6 +88,7 @@ options 	RCTL			# Resource limits
 options 	KDB			# Enable kernel debugger support.
 options		DDB			# In-kernel debugger
 options 	KDB_TRACE		# Print a stack trace for a panic.
+options		KDB_UNATTENDED		# Don't go to debugger on panic
 
 # Make an SMP-capable kernel by default
 options 	SMP			# Symmetric MultiProcessor Kernel
