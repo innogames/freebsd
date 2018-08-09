@@ -635,6 +635,7 @@ struct pf_src_node {
 	union pf_rule_ptr rule;
 	struct pfi_kif	*kif;
 	struct pfi_kif	*rkif;
+	struct pfr_ktable *rtable;
 	u_int64_t	 bytes[2];
 	u_int64_t	 packets[2];
 	u_int32_t	 states;
@@ -727,6 +728,7 @@ struct pf_state {
 	union pf_rule_ptr	 anchor;
 	union pf_rule_ptr	 nat_rule;
 	struct pf_addr		 rt_addr;
+	struct pfr_ktable	*rtable;
 	struct pf_state_key	*key[2];	/* addresses stack and wire  */
 	struct pfi_kif		*kif;
 	struct pfi_kif		*rt_kif;
@@ -1777,8 +1779,8 @@ int			 pf_step_out_of_anchor(struct pf_anchor_stackframe *, int *,
 
 int			 pf_map_addr(u_int8_t, struct pf_rule *,
 			    struct pf_addr *, struct pf_addr *,
-			    struct pfi_kif **, struct pf_addr *,
-			    struct pf_src_node **, int);
+			    struct pfi_kif **, struct pfr_ktable **,
+			    struct pf_addr *, struct pf_src_node **, int);
 struct pf_rule		*pf_get_translation(struct pf_pdesc *, struct mbuf *,
 			    int, int, struct pfi_kif *, struct pf_src_node **,
 			    struct pf_state_key **, struct pf_state_key **,

@@ -3701,7 +3701,7 @@ pf_create_state(struct pf_rule *r, struct pf_rule *nr, struct pf_rule *a,
 
 	if (r->rt && r->rt != PF_FASTROUTE) {
 		if (pf_map_addr(pd->af, r, pd->src, &s->rt_addr, &s->rt_kif,
-		    NULL, &sn, 1)) {
+		    &s->rtable, NULL, &sn, 1)) {
 			REASON_SET(&reason, PFRES_MAPFAILED);
 			pf_src_tree_remove_state(s);
 			STATE_DEC_COUNTERS(s);
@@ -5529,7 +5529,7 @@ pf_route(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 		}
 		if (s == NULL) {
 			pf_map_addr(AF_INET, r, (struct pf_addr *)&ip->ip_src,
-			    &naddr, &rt_kif, NULL, &sn, 0);
+			    &naddr, &rt_kif, NULL, NULL, &sn, 0);
 			if (!PF_AZERO(&naddr, AF_INET))
 				dst.sin_addr.s_addr = naddr.v4.s_addr;
 			ifp = rt_kif ? rt_kif->pfik_ifp : NULL;
@@ -5699,7 +5699,7 @@ pf_route6(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 	}
 	if (s == NULL) {
 		pf_map_addr(AF_INET6, r, (struct pf_addr *)&ip6->ip6_src,
-		    &naddr, &rt_kif, NULL, &sn, 0);
+		    &naddr, &rt_kif, NULL, NULL, &sn, 0);
 		if (!PF_AZERO(&naddr, AF_INET6))
 			PF_ACPY((struct pf_addr *)&dst.sin6_addr,
 			    &naddr, AF_INET6);

@@ -221,7 +221,7 @@ pf_get_sport(sa_family_t af, u_int8_t proto, struct pf_rule *r,
 	struct pf_addr		init_addr;
 
 	bzero(&init_addr, sizeof(init_addr));
-	if (pf_map_addr(af, r, saddr, naddr, NULL, &init_addr, sn, 0))
+	if (pf_map_addr(af, r, saddr, naddr, NULL, NULL, &init_addr, sn, 0))
 		return (1);
 
 	if (proto == IPPROTO_ICMP) {
@@ -293,8 +293,8 @@ pf_get_sport(sa_family_t af, u_int8_t proto, struct pf_rule *r,
 		switch (r->rpool.opts & PF_POOL_TYPEMASK) {
 		case PF_POOL_RANDOM:
 		case PF_POOL_ROUNDROBIN:
-			if (pf_map_addr(af, r, saddr, naddr, NULL, &init_addr,
-			    sn, 0))
+			if (pf_map_addr(af, r, saddr, naddr, NULL, NULL,
+			    &init_addr, sn, 0))
 				return (1);
 			break;
 		case PF_POOL_NONE:
@@ -309,8 +309,8 @@ pf_get_sport(sa_family_t af, u_int8_t proto, struct pf_rule *r,
 
 int
 pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
-    struct pf_addr *naddr, struct pfi_kif **rt_kif, struct pf_addr *init_addr,
-    struct pf_src_node **sn, int return_locked)
+    struct pf_addr *naddr, struct pfi_kif **rt_kif, struct pfr_ktable **rt_table,
+    struct pf_addr *init_addr, struct pf_src_node **sn, int return_locked)
 {
 	struct pf_pool		*rpool = &r->rpool;
 	struct pf_addr		*raddr = NULL, *rmask = NULL;
@@ -331,11 +331,19 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 		PF_ACPY(naddr, &(*sn)->raddr, af);
 		if (rt_kif)
 			*rt_kif = (*sn)->rkif;
+		if (rt_table)
+			*rt_table = (*sn)->rtable;
 		if (V_pf_status.debug >= PF_DEBUG_MISC) {
 			printf("pf_map_addr: src tracking maps ");
 			pf_print_host(saddr, 0, af);
 			printf(" to ");
 			pf_print_host(naddr, 0, af);
+			if ((*sn)->rkif) {
+				printf(" interface %s", (*sn)->rkif->pfik_name);
+			}
+			if ((*sn)->rtable) {
+				printf(" table %s\n", (*sn)->rtable->pfrkt_name);
+			}
 			printf("\n");
 		}
 		if (!return_locked)
@@ -514,12 +522,16 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 		PF_AINC(&rpool->counter, af);
 		if (rt_kif)
 			*rt_kif = rpool->cur->kif;
+		if (rt_table && rpool->cur->addr.type == PF_ADDR_TABLE)
+			*rt_table = rpool->cur->addr.p.tbl;
 		break;
 	    }
 	}
 	if (*sn != NULL) {
 		PF_ACPY(&(*sn)->raddr, naddr, af);
 		(*sn)->rkif = rpool->cur->kif;
+		if (rpool->cur->addr.type == PF_ADDR_TABLE)
+			(*sn)->rtable = rpool->cur->addr.p.tbl;
 	}
 
 	if (V_pf_status.debug >= PF_DEBUG_MISC &&
@@ -676,7 +688,7 @@ pf_get_translation(struct pf_pdesc *pd, struct mbuf *m, int off, int direction,
 		}
 		break;
 	case PF_RDR: {
-		if (pf_map_addr(pd->af, r, saddr, naddr, NULL, NULL, sn, 0))
+		if (pf_map_addr(pd->af, r, saddr, naddr, NULL, NULL, NULL, sn, 0))
 			goto notrans;
 		if ((r->rpool.opts & PF_POOL_TYPEMASK) == PF_POOL_BITMASK)
 			PF_POOLMASK(naddr, naddr, &r->rpool.cur->addr.v.a.mask,
