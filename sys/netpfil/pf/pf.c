@@ -1666,6 +1666,27 @@ pf_unlink_state(struct pf_state *s, u_int flags, u_int kill_flags)
 		    s->tag, NULL);
 	}
 
+	if (s->rule.ptr) {
+		if (s->rule.ptr->src.addr.type == PF_ADDR_TABLE)
+			pfr_update_stats(s->rule.ptr->src.addr.p.tbl,
+			    &s->key[(s->direction == PF_IN)]->addr[0],
+			    s->key[PF_SK_WIRE]->af, 0, 0, -1,
+			    s->direction == PF_OUT,
+			    s->rule.ptr->action == PF_PASS,
+			    s->rule.ptr->src.neg);
+		if (s->rule.ptr->dst.addr.type == PF_ADDR_TABLE)
+			pfr_update_stats(s->rule.ptr->dst.addr.p.tbl,
+			    &s->key[(s->direction == PF_IN)]->addr[0],
+			    s->key[PF_SK_WIRE]->af, 0, 0, -1,
+			    s->direction == PF_OUT,
+			    s->rule.ptr->action == PF_PASS,
+			    s->rule.ptr->dst.neg);
+	}
+
+	if (s->rtable)
+		pfr_update_stats(s->rtable, &s->rt_addr,
+		    s->key[PF_SK_WIRE]->af, 0, 0, -1, 0, 1, 0);
+
 	LIST_REMOVE(s, entry);
 	pf_src_tree_remove_state(s);
 
@@ -3812,6 +3833,21 @@ pf_create_state(struct pf_rule *r, struct pf_rule *nr, struct pf_rule *a,
 		REASON_SET(&reason, PFRES_SYNPROXY);
 		return (PF_SYNPROXY_DROP);
 	}
+
+	if (r) {
+		if (r->src.addr.type == PF_ADDR_TABLE)
+			pfr_update_stats(r->src.addr.p.tbl,
+			    &s->key[(s->direction == PF_IN)]->addr[0],
+			    pd->af, 0, 0, 1, pd->dir == PF_OUT,
+			    r->action == PF_PASS, r->src.neg);
+		if (r->dst.addr.type == PF_ADDR_TABLE)
+			pfr_update_stats(r->dst.addr.p.tbl,
+			    &s->key[(s->direction == PF_IN)]->addr[0],
+			    pd->af, 0, 0, 1, pd->dir == PF_OUT,
+			    r->action == PF_PASS, r->dst.neg);
+	}
+	if (s->rtable)
+		pfr_update_stats(s->rtable, &s->rt_addr, pd->af, 0, 0, 1, 0, 1, 0);
 
 	return (PF_PASS);
 
@@ -6256,18 +6292,18 @@ done:
 			    (s == NULL) ? pd.src :
 			    &s->key[(s->direction == PF_IN)]->
 				addr[(s->direction == PF_OUT)],
-			    pd.af, pd.tot_len, dir == PF_OUT,
+			    pd.af, pd.tot_len, 1, 0, dir == PF_OUT,
 			    r->action == PF_PASS, tr->src.neg);
 		if (tr->dst.addr.type == PF_ADDR_TABLE)
 			pfr_update_stats(tr->dst.addr.p.tbl,
 			    (s == NULL) ? pd.dst :
 			    &s->key[(s->direction == PF_IN)]->
 				addr[(s->direction == PF_IN)],
-			    pd.af, pd.tot_len, dir == PF_OUT,
+			    pd.af, pd.tot_len, 1, 0, dir == PF_OUT,
 			    r->action == PF_PASS, tr->dst.neg);
 		if (s && s->rtable)
 			pfr_update_stats(s->rtable, &s->rt_addr,
-			    pd.af, pd.tot_len, dir == PF_OUT,
+			    pd.af, pd.tot_len, 1, 0, dir == PF_OUT,
 			    r->action == PF_PASS, 0);
 	}
 
@@ -6657,17 +6693,17 @@ done:
 			pfr_update_stats(tr->src.addr.p.tbl,
 			    (s == NULL) ? pd.src :
 			    &s->key[(s->direction == PF_IN)]->addr[0],
-			    pd.af, pd.tot_len, dir == PF_OUT,
+			    pd.af, pd.tot_len, 1, 0, dir == PF_OUT,
 			    r->action == PF_PASS, tr->src.neg);
 		if (tr->dst.addr.type == PF_ADDR_TABLE)
 			pfr_update_stats(tr->dst.addr.p.tbl,
 			    (s == NULL) ? pd.dst :
 			    &s->key[(s->direction == PF_IN)]->addr[1],
-			    pd.af, pd.tot_len, dir == PF_OUT,
+			    pd.af, pd.tot_len, 1, 0, dir == PF_OUT,
 			    r->action == PF_PASS, tr->dst.neg);
 		if (s && s->rtable)
 			pfr_update_stats(s->rtable, &s->rt_addr,
-			    pd.af, pd.tot_len, dir == PF_OUT,
+			    pd.af, pd.tot_len, 1, 0, dir == PF_OUT,
 			    r->action == PF_PASS, 0);
 	}
 

@@ -792,6 +792,7 @@ pfr_create_kentry(struct pfr_addr *ad)
 		ke->pfrke_counters.pfrkc_bytes[pfr_dir][pfr_op] =
 		    counter_u64_alloc(M_WAITOK);
 	}
+	ke->pfrke_counters.pfrkc_states = counter_u64_alloc(M_WAITOK);
 	return (ke);
 }
 
@@ -818,6 +819,7 @@ pfr_destroy_kentry(struct pfr_kentry *ke)
 		counter_u64_free(
 		    ke->pfrke_counters.pfrkc_bytes[pfr_dir][pfr_op]);
 	}
+	counter_u64_free(ke->pfrke_counters.pfrkc_states);
 
 	uma_zfree(V_pfr_kentry_z, ke);
 }
@@ -1041,6 +1043,8 @@ pfr_walktree(struct radix_node *rn, void *arg)
 
 			pfr_copyout_addr(&as.pfras_a, ke);
 			if (w->pfrw_flags & PFR_TFLAG_COUNTERS) {
+				as.pfras_states = counter_u64_fetch(
+				    ke->pfrke_counters.pfrkc_states);
 				for (pfr_dir = 0;
 				    pfr_dir < PFR_DIR_MAX;
 				    pfr_dir ++)
@@ -1057,6 +1061,7 @@ pfr_walktree(struct radix_node *rn, void *arg)
 						pfrkc_bytes[pfr_dir][pfr_op]);
 				}
 			} else {
+				as.pfras_states = 0;
 				bzero(as.pfras_packets, sizeof(as.pfras_packets));
 				bzero(as.pfras_bytes, sizeof(as.pfras_bytes));
 				as.pfras_a.pfra_fback = PFR_FB_NOCOUNT;
@@ -2017,7 +2022,8 @@ pfr_match_addr(struct pfr_ktable *kt, struct pf_addr *a, sa_family_t af)
 
 void
 pfr_update_stats(struct pfr_ktable *kt, struct pf_addr *a, sa_family_t af,
-    u_int64_t len, int dir_out, int op_pass, int notrule)
+    int64_t len, int64_t packets, int64_t states, int dir_out,
+    int op_pass, int notrule)
 {
 	struct pfr_kentry	*ke = NULL;
 
@@ -2065,14 +2071,15 @@ pfr_update_stats(struct pfr_ktable *kt, struct pf_addr *a, sa_family_t af,
 			printf("pfr_update_stats: assertion failed.\n");
 		op_pass = PFR_OP_XPASS;
 	}
-	counter_u64_add(kt->pfrkt_packets[dir_out][op_pass], 1);
+	counter_u64_add(kt->pfrkt_packets[dir_out][op_pass], packets);
 	counter_u64_add(kt->pfrkt_bytes[dir_out][op_pass], len);
 	if (ke != NULL && op_pass != PFR_OP_XPASS &&
 	    (kt->pfrkt_flags & PFR_TFLAG_COUNTERS)) {
 		counter_u64_add(ke->pfrke_counters.
-		    pfrkc_packets[dir_out][op_pass], 1);
+		    pfrkc_packets[dir_out][op_pass], packets);
 		counter_u64_add(ke->pfrke_counters.
 		    pfrkc_bytes[dir_out][op_pass], len);
+		counter_u64_add(ke->pfrke_counters.pfrkc_states, states);
 	}
 }
 

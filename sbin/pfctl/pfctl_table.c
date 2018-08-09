@@ -484,6 +484,7 @@ print_astats(struct pfr_astats *as, int dns)
 	printf("\tCleared:     %s", ctime(&time));
  	if (as->pfras_a.pfra_fback == PFR_FB_NOCOUNT)
 		return;
+	printf("\tStates:      %llu\n", (unsigned long long)as->pfras_states);
 	for (dir = 0; dir < PFR_DIR_MAX; dir++)
 		for (op = 0; op < PFR_OP_ADDR_MAX; op++)
 			printf("\t%-12s [ Packets: %-18llu Bytes: %-18llu ]\n",
