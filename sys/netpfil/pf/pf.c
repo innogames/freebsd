@@ -282,7 +282,8 @@ static struct pf_state	*pf_find_state(struct pfi_kif *,
 static int		 pf_src_connlimit(struct pf_state **);
 static void		 pf_overload_task(void *v, int pending);
 static int		 pf_insert_src_node(struct pf_src_node **,
-			    struct pf_rule *, struct pf_addr *, sa_family_t);
+			    struct pf_rule *, struct pf_addr *, sa_family_t,
+			    struct pf_srchash **);
 static u_int		 pf_purge_expired_states(u_int, int);
 static void		 pf_purge_unlinked_rules(void);
 static int		 pf_mtag_uminit(void *, int, int);
@@ -656,37 +657,34 @@ pf_overload_task(void *v, int pending)
 }
 
 /*
- * Can return locked on failure, so that we can consistently
- * allocate and insert a new one.
+ * Always returns locked, so that we can perform operations on found node or
+ * consistently allocate and insert a new one.
  */
 struct pf_src_node *
 pf_find_src_node(struct pf_addr *src, struct pf_rule *rule, sa_family_t af,
-	int returnlocked)
+    struct pf_srchash **sh)
 {
-	struct pf_srchash *sh;
 	struct pf_src_node *n;
 
 	counter_u64_add(V_pf_status.scounters[SCNT_SRC_NODE_SEARCH], 1);
 
-	sh = &V_pf_srchash[pf_hashsrc(src, af)];
-	PF_HASHROW_LOCK(sh);
-	LIST_FOREACH(n, &sh->nodes, entry)
+	*sh = &V_pf_srchash[pf_hashsrc(src, af)];
+	PF_HASHROW_LOCK(*sh);
+	LIST_FOREACH(n, &(*sh)->nodes, entry)
 		if (n->rule.ptr == rule && n->af == af &&
 		    ((af == AF_INET && n->addr.v4.s_addr == src->v4.s_addr) ||
 		    (af == AF_INET6 && bcmp(&n->addr, src, sizeof(*src)) == 0)))
 			break;
-	if (n != NULL) {
-		n->states++;
-		PF_HASHROW_UNLOCK(sh);
-	} else if (returnlocked == 0)
-		PF_HASHROW_UNLOCK(sh);
 
 	return (n);
 }
 
+/*
+ * Returns locked on success and unlocked on failure.
+ */
 static int
 pf_insert_src_node(struct pf_src_node **sn, struct pf_rule *rule,
-    struct pf_addr *src, sa_family_t af)
+    struct pf_addr *src, sa_family_t af, struct pf_srchash **sh)
 {
 
 	KASSERT((rule->rule_flag & PFRULE_RULESRCTRACK ||
@@ -694,12 +692,10 @@ pf_insert_src_node(struct pf_src_node **sn, struct pf_rule *rule,
 	    ("%s for non-tracking rule %p", __func__, rule));
 
 	if (*sn == NULL)
-		*sn = pf_find_src_node(src, rule, af, 1);
+		*sn = pf_find_src_node(src, rule, af, sh);
 
 	if (*sn == NULL) {
-		struct pf_srchash *sh = &V_pf_srchash[pf_hashsrc(src, af)];
-
-		PF_HASHROW_ASSERT(sh);
+		PF_HASHROW_ASSERT(*sh);
 
 		if (!rule->max_src_nodes ||
 		    counter_u64_fetch(rule->src_nodes) < rule->max_src_nodes)
@@ -708,7 +704,6 @@ pf_insert_src_node(struct pf_src_node **sn, struct pf_rule *rule,
 			counter_u64_add(V_pf_status.lcounters[LCNT_SRCNODES],
 			    1);
 		if ((*sn) == NULL) {
-			PF_HASHROW_UNLOCK(sh);
 			return (-1);
 		}
 
@@ -719,13 +714,12 @@ pf_insert_src_node(struct pf_src_node **sn, struct pf_rule *rule,
 		(*sn)->af = af;
 		(*sn)->rule.ptr = rule;
 		PF_ACPY(&(*sn)->addr, src, af);
-		LIST_INSERT_HEAD(&sh->nodes, *sn, entry);
+		LIST_INSERT_HEAD(&(*sh)->nodes, *sn, entry);
 		(*sn)->creation = time_uptime;
 		(*sn)->ruletype = rule->action;
 		(*sn)->states = 1;
 		if ((*sn)->rule.ptr != NULL)
 			counter_u64_add((*sn)->rule.ptr->src_nodes, 1);
-		PF_HASHROW_UNLOCK(sh);
 		counter_u64_add(V_pf_status.scounters[SCNT_SRC_NODE_INSERT], 1);
 	} else {
 		if (rule->max_src_states &&
@@ -735,6 +729,7 @@ pf_insert_src_node(struct pf_src_node **sn, struct pf_rule *rule,
 			return (-1);
 		}
 	}
+	(*sn)->states++;
 	return (0);
 }
 
@@ -3609,6 +3604,8 @@ pf_create_state(struct pf_rule *r, struct pf_rule *nr, struct pf_rule *a,
 	struct tcphdr		*th = pd->hdr.tcp;
 	u_int16_t		 mss = V_tcp_mssdflt;
 	u_short			 reason;
+	struct pf_srchash	*sn_sh = NULL;
+	struct pf_srchash	*nsn_sh = NULL;
 
 	/* check maximums */
 	if (r->max_states &&
@@ -3620,16 +3617,18 @@ pf_create_state(struct pf_rule *r, struct pf_rule *nr, struct pf_rule *a,
 	/* src node for filter rule */
 	if ((r->rule_flag & PFRULE_SRCTRACK ||
 	    r->rpool.opts & PF_POOL_STICKYADDR) &&
-	    pf_insert_src_node(&sn, r, pd->src, pd->af) != 0) {
+	    pf_insert_src_node(&sn, r, pd->src, pd->af, &sn_sh) != 0) {
 		REASON_SET(&reason, PFRES_SRCLIMIT);
 		goto csfailed;
 	}
+
 	/* src node for translation rule */
 	if (nr != NULL && (nr->rpool.opts & PF_POOL_STICKYADDR) &&
-	    pf_insert_src_node(&nsn, nr, &sk->addr[pd->sidx], pd->af)) {
+	    pf_insert_src_node(&nsn, nr, &sk->addr[pd->sidx], pd->af, &nsn_sh)) {
 		REASON_SET(&reason, PFRES_SRCLIMIT);
 		goto csfailed;
 	}
+
 	s = uma_zalloc(V_pf_state_z, M_NOWAIT | M_ZERO);
 	if (s == NULL) {
 		REASON_SET(&reason, PFRES_MEMORY);
@@ -3701,25 +3700,30 @@ pf_create_state(struct pf_rule *r, struct pf_rule *nr, struct pf_rule *a,
 	}
 
 	if (r->rt && r->rt != PF_FASTROUTE) {
-		if (pf_map_addr(pd->af, r, pd->src, &s->rt_addr, NULL, &sn)) {
+		if (pf_map_addr(pd->af, r, pd->src, &s->rt_addr, &s->rt_kif,
+		    NULL, &sn, 1)) {
 			REASON_SET(&reason, PFRES_MAPFAILED);
 			pf_src_tree_remove_state(s);
 			STATE_DEC_COUNTERS(s);
 			uma_zfree(V_pf_state_z, s);
 			goto csfailed;
 		}
-		s->rt_kif = r->rpool.cur->kif;
 	}
 
 	s->creation = time_uptime;
 	s->expire = time_uptime;
 
-	if (sn != NULL)
+	if (sn != NULL) {
 		s->src_node = sn;
+		sn->states++;
+		PF_HASHROW_UNLOCK(sn_sh);
+	}
 	if (nsn != NULL) {
 		/* XXX We only modify one side for now. */
 		PF_ACPY(&nsn->raddr, &nk->addr[1], pd->af);
 		s->nat_src_node = nsn;
+		nsn->states++;
+		PF_HASHROW_UNLOCK(nsn_sh);
 	}
 	if (pd->proto == IPPROTO_TCP) {
 		if ((pd->flags & PFDESC_TCP_NORM) && pf_normalize_tcp_init(m,
@@ -3818,32 +3822,26 @@ csfailed:
 		uma_zfree(V_pf_state_key_z, nk);
 
 	if (sn != NULL) {
-		struct pf_srchash *sh;
-
-		sh = &V_pf_srchash[pf_hashsrc(&sn->addr, sn->af)];
-		PF_HASHROW_LOCK(sh);
 		if (--sn->states == 0 && sn->expire == 0) {
 			pf_unlink_src_node(sn);
 			uma_zfree(V_pf_sources_z, sn);
 			counter_u64_add(
 			    V_pf_status.scounters[SCNT_SRC_NODE_REMOVALS], 1);
 		}
-		PF_HASHROW_UNLOCK(sh);
 	}
+	if (sn_sh)
+		PF_HASHROW_UNLOCK(sn_sh);
 
 	if (nsn != sn && nsn != NULL) {
-		struct pf_srchash *sh;
-
-		sh = &V_pf_srchash[pf_hashsrc(&nsn->addr, nsn->af)];
-		PF_HASHROW_LOCK(sh);
 		if (--nsn->states == 0 && nsn->expire == 0) {
 			pf_unlink_src_node(nsn);
 			uma_zfree(V_pf_sources_z, nsn);
 			counter_u64_add(
 			    V_pf_status.scounters[SCNT_SRC_NODE_REMOVALS], 1);
 		}
-		PF_HASHROW_UNLOCK(sh);
 	}
+	if (nsn_sh)
+		PF_HASHROW_UNLOCK(nsn_sh);
 
 	return (PF_DROP);
 }
@@ -5467,6 +5465,7 @@ pf_route(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 	struct mbuf		*m0, *m1;
 	struct sockaddr_in	dst;
 	struct ip		*ip;
+	struct pfi_kif		*rt_kif = NULL;
 	struct ifnet		*ifp = NULL;
 	struct pf_addr		 naddr;
 	struct pf_src_node	*sn = NULL;
@@ -5530,11 +5529,10 @@ pf_route(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 		}
 		if (s == NULL) {
 			pf_map_addr(AF_INET, r, (struct pf_addr *)&ip->ip_src,
-			    &naddr, NULL, &sn);
+			    &naddr, &rt_kif, NULL, &sn, 0);
 			if (!PF_AZERO(&naddr, AF_INET))
 				dst.sin_addr.s_addr = naddr.v4.s_addr;
-			ifp = r->rpool.cur->kif ?
-			    r->rpool.cur->kif->pfik_ifp : NULL;
+			ifp = rt_kif ? rt_kif->pfik_ifp : NULL;
 		} else {
 			if (!PF_AZERO(&s->rt_addr, AF_INET))
 				dst.sin_addr.s_addr =
@@ -5645,6 +5643,7 @@ pf_route6(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 	struct mbuf		*m0;
 	struct sockaddr_in6	dst;
 	struct ip6_hdr		*ip6;
+	struct pfi_kif		*rt_kif = NULL;
 	struct ifnet		*ifp = NULL;
 	struct pf_addr		 naddr;
 	struct pf_src_node	*sn = NULL;
@@ -5700,11 +5699,11 @@ pf_route6(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 	}
 	if (s == NULL) {
 		pf_map_addr(AF_INET6, r, (struct pf_addr *)&ip6->ip6_src,
-		    &naddr, NULL, &sn);
+		    &naddr, &rt_kif, NULL, &sn, 0);
 		if (!PF_AZERO(&naddr, AF_INET6))
 			PF_ACPY((struct pf_addr *)&dst.sin6_addr,
 			    &naddr, AF_INET6);
-		ifp = r->rpool.cur->kif ? r->rpool.cur->kif->pfik_ifp : NULL;
+		ifp = rt_kif ? rt_kif->pfik_ifp : NULL;
 	} else {
 		if (!PF_AZERO(&s->rt_addr, AF_INET6))
 			PF_ACPY((struct pf_addr *)&dst.sin6_addr,

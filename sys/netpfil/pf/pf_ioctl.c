@@ -420,6 +420,7 @@ pf_free_rule(struct pf_rule *rule)
 	if (rule->kif)
 		pfi_kif_unref(rule->kif);
 	pf_anchor_remove(rule);
+	mtx_destroy(&rule->rpool.lock);
 	pf_empty_pool(&rule->rpool.list);
 	counter_u64_free(rule->states_cur);
 	counter_u64_free(rule->states_tot);
@@ -1172,6 +1173,7 @@ pfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags, struct thread *td
 		rule->states_cur = counter_u64_alloc(M_WAITOK);
 		rule->states_tot = counter_u64_alloc(M_WAITOK);
 		rule->src_nodes = counter_u64_alloc(M_WAITOK);
+		mtx_init(&rule->rpool.lock, "pf_pool", NULL, MTX_DEF);
 		rule->cuid = td->td_ucred->cr_ruid;
 		rule->cpid = td->td_proc ? td->td_proc->p_pid : 0;
 		TAILQ_INIT(&rule->rpool.list);

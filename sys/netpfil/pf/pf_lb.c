@@ -47,6 +47,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/rwlock.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
+#include <sys/mutex.h>
 
 #include <net/if.h>
 #include <net/vnet.h>
@@ -220,7 +221,7 @@ pf_get_sport(sa_family_t af, u_int8_t proto, struct pf_rule *r,
 	struct pf_addr		init_addr;
 
 	bzero(&init_addr, sizeof(init_addr));
-	if (pf_map_addr(af, r, saddr, naddr, &init_addr, sn))
+	if (pf_map_addr(af, r, saddr, naddr, NULL, &init_addr, sn, 0))
 		return (1);
 
 	if (proto == IPPROTO_ICMP) {
@@ -292,7 +293,8 @@ pf_get_sport(sa_family_t af, u_int8_t proto, struct pf_rule *r,
 		switch (r->rpool.opts & PF_POOL_TYPEMASK) {
 		case PF_POOL_RANDOM:
 		case PF_POOL_ROUNDROBIN:
-			if (pf_map_addr(af, r, saddr, naddr, &init_addr, sn))
+			if (pf_map_addr(af, r, saddr, naddr, NULL, &init_addr,
+			    sn, 0))
 				return (1);
 			break;
 		case PF_POOL_NONE:
@@ -307,16 +309,19 @@ pf_get_sport(sa_family_t af, u_int8_t proto, struct pf_rule *r,
 
 int
 pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
-    struct pf_addr *naddr, struct pf_addr *init_addr, struct pf_src_node **sn)
+    struct pf_addr *naddr, struct pfi_kif **rt_kif, struct pf_addr *init_addr,
+    struct pf_src_node **sn, int return_locked)
 {
 	struct pf_pool		*rpool = &r->rpool;
 	struct pf_addr		*raddr = NULL, *rmask = NULL;
+	bool			 pool_locked = false;
+	struct pf_srchash	*sh = NULL;
 
 	/* Try to find a src_node if none was given and this
 	   is a sticky-address rule. */
 	if (*sn == NULL && r->rpool.opts & PF_POOL_STICKYADDR &&
 	    (r->rpool.opts & PF_POOL_TYPEMASK) != PF_POOL_NONE)
-		*sn = pf_find_src_node(saddr, r, af, 0);
+		*sn = pf_find_src_node(saddr, r, af, &sh);
 
 	/* If a src_node was found or explicitly given and it has a non-zero
 	   route address, use this address. A zeroed address is found if the
@@ -324,6 +329,8 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 	   needs to be filled in with routing decision calculated here. */
 	if (*sn != NULL && !PF_AZERO(&(*sn)->raddr, af)) {
 		PF_ACPY(naddr, &(*sn)->raddr, af);
+		if (rt_kif)
+			*rt_kif = (*sn)->rkif;
 		if (V_pf_status.debug >= PF_DEBUG_MISC) {
 			printf("pf_map_addr: src tracking maps ");
 			pf_print_host(saddr, 0, af);
@@ -331,21 +338,29 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 			pf_print_host(naddr, 0, af);
 			printf("\n");
 		}
+		if (!return_locked)
+			PF_HASHROW_UNLOCK(sh);
 		return (0);
 	}
 
 	/* Find the route using chosen algorithm. Store the found route
 	   in src_node if it was given or found. */
-	if (rpool->cur->addr.type == PF_ADDR_NOROUTE)
+	if (rpool->cur->addr.type == PF_ADDR_NOROUTE) {
+		if (sh && !return_locked)
+			PF_HASHROW_UNLOCK(sh);
 		return (1);
+	}
 	if (rpool->cur->addr.type == PF_ADDR_DYNIFTL) {
 		switch (af) {
 #ifdef INET
 		case AF_INET:
 			if (rpool->cur->addr.p.dyn->pfid_acnt4 < 1 &&
 			    (rpool->opts & PF_POOL_TYPEMASK) !=
-			    PF_POOL_ROUNDROBIN)
+			    PF_POOL_ROUNDROBIN) {
+				if (sh && !return_locked)
+					PF_HASHROW_UNLOCK(sh);
 				return (1);
+			    }
 			 raddr = &rpool->cur->addr.p.dyn->pfid_addr4;
 			 rmask = &rpool->cur->addr.p.dyn->pfid_mask4;
 			break;
@@ -354,16 +369,22 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 		case AF_INET6:
 			if (rpool->cur->addr.p.dyn->pfid_acnt6 < 1 &&
 			    (rpool->opts & PF_POOL_TYPEMASK) !=
-			    PF_POOL_ROUNDROBIN)
+			    PF_POOL_ROUNDROBIN) {
+				if (sh && !return_locked)
+					PF_HASHROW_UNLOCK(sh);
 				return (1);
+			    }
 			raddr = &rpool->cur->addr.p.dyn->pfid_addr6;
 			rmask = &rpool->cur->addr.p.dyn->pfid_mask6;
 			break;
 #endif /* INET6 */
 		}
 	} else if (rpool->cur->addr.type == PF_ADDR_TABLE) {
-		if ((rpool->opts & PF_POOL_TYPEMASK) != PF_POOL_ROUNDROBIN)
+		if ((rpool->opts & PF_POOL_TYPEMASK) != PF_POOL_ROUNDROBIN) {
+			if (sh && !return_locked)
+				PF_HASHROW_UNLOCK(sh);
 			return (1); /* unsupported */
+		}
 	} else {
 		raddr = &rpool->cur->addr.v.a.addr;
 		rmask = &rpool->cur->addr.v.a.mask;
@@ -425,6 +446,8 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 	    }
 	case PF_POOL_ROUNDROBIN:
 	    {
+		mtx_lock(&rpool->lock);
+		pool_locked = true;
 		struct pf_pooladdr *acur = rpool->cur;
 
 		/*
@@ -432,20 +455,10 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 		 * the round-robin machine state in the rule, thus
 		 * forwarding thread needs to modify rule.
 		 *
-		 * This is done w/o locking, because performance is assumed
-		 * more important than round-robin precision.
-		 *
 		 * In the simpliest case we just update the "rpool->cur"
 		 * pointer. However, if pool contains tables or dynamic
 		 * addresses, then "tblidx" is also used to store machine
-		 * state. Since "tblidx" is int, concurrent access to it can't
-		 * lead to inconsistence, only to lost of precision.
-		 *
-		 * Things get worse, if table contains not hosts, but
-		 * prefixes. In this case counter also stores machine state,
-		 * and for IPv6 address, counter can't be updated atomically.
-		 * Probably, using round-robin on a table containing IPv6
-		 * prefixes (or even IPv4) would cause a panic.
+		 * state.
 		 */
 
 		if (rpool->cur->addr.type == PF_ADDR_TABLE) {
@@ -471,6 +484,9 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 				/* table contains no address of type 'af' */
 				if (rpool->cur != acur)
 					goto try_next;
+				mtx_unlock(&rpool->lock);
+				if (sh && !return_locked)
+					PF_HASHROW_UNLOCK(sh);
 				return (1);
 			}
 		} else if (rpool->cur->addr.type == PF_ADDR_DYNIFTL) {
@@ -480,6 +496,9 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 				/* table contains no address of type 'af' */
 				if (rpool->cur != acur)
 					goto try_next;
+				mtx_unlock(&rpool->lock);
+				if (sh && !return_locked)
+					PF_HASHROW_UNLOCK(sh);
 				return (1);
 			}
 		} else {
@@ -493,19 +512,34 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 		if (init_addr != NULL && PF_AZERO(init_addr, af))
 			PF_ACPY(init_addr, naddr, af);
 		PF_AINC(&rpool->counter, af);
+		if (rt_kif)
+			*rt_kif = rpool->cur->kif;
 		break;
 	    }
 	}
-	if (*sn != NULL)
+	if (*sn != NULL) {
 		PF_ACPY(&(*sn)->raddr, naddr, af);
+		(*sn)->rkif = rpool->cur->kif;
+	}
 
 	if (V_pf_status.debug >= PF_DEBUG_MISC &&
 	    (rpool->opts & PF_POOL_TYPEMASK) != PF_POOL_NONE) {
 		printf("pf_map_addr: selected address ");
 		pf_print_host(naddr, 0, af);
+		if (rpool->cur->kif) {
+			printf(" interface %s", rpool->cur->kif->pfik_name);
+		}
+		if (rpool->cur->addr.type == PF_ADDR_TABLE) {
+			printf(" table %s\n",
+			    rpool->cur->addr.p.tbl->pfrkt_name);
+		}
 		printf("\n");
 	}
 
+	if (pool_locked)
+		mtx_unlock(&rpool->lock);
+	if (sh && !return_locked)
+		PF_HASHROW_UNLOCK(sh);
 	return (0);
 }
 
@@ -642,7 +676,7 @@ pf_get_translation(struct pf_pdesc *pd, struct mbuf *m, int off, int direction,
 		}
 		break;
 	case PF_RDR: {
-		if (pf_map_addr(pd->af, r, saddr, naddr, NULL, sn))
+		if (pf_map_addr(pd->af, r, saddr, naddr, NULL, NULL, sn, 0))
 			goto notrans;
 		if ((r->rpool.opts & PF_POOL_TYPEMASK) == PF_POOL_BITMASK)
 			PF_POOLMASK(naddr, naddr, &r->rpool.cur->addr.v.a.mask,

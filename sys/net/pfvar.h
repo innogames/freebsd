@@ -364,6 +364,7 @@ struct pf_pool {
 	int			 tblidx;
 	u_int16_t		 proxy_port[2];
 	u_int8_t		 opts;
+	struct mtx		 lock;
 };
 
 
@@ -633,6 +634,7 @@ struct pf_src_node {
 	struct pf_addr	 raddr;
 	union pf_rule_ptr rule;
 	struct pfi_kif	*kif;
+	struct pfi_kif	*rkif;
 	u_int64_t	 bytes[2];
 	u_int64_t	 packets[2];
 	u_int32_t	 states;
@@ -1585,7 +1587,8 @@ extern struct pf_state		*pf_find_state_byid(uint64_t, uint32_t);
 extern struct pf_state		*pf_find_state_all(struct pf_state_key_cmp *,
 				    u_int, int *);
 extern struct pf_src_node	*pf_find_src_node(struct pf_addr *,
-				    struct pf_rule *, sa_family_t, int);
+				    struct pf_rule *, sa_family_t,
+				    struct pf_srchash **);
 extern void			 pf_unlink_src_node(struct pf_src_node *);
 extern u_int			 pf_free_src_nodes(struct pf_src_node_list *);
 extern void			 pf_print_state(struct pf_state *);
@@ -1774,7 +1777,8 @@ int			 pf_step_out_of_anchor(struct pf_anchor_stackframe *, int *,
 
 int			 pf_map_addr(u_int8_t, struct pf_rule *,
 			    struct pf_addr *, struct pf_addr *,
-			    struct pf_addr *, struct pf_src_node **);
+			    struct pfi_kif **, struct pf_addr *,
+			    struct pf_src_node **, int);
 struct pf_rule		*pf_get_translation(struct pf_pdesc *, struct mbuf *,
 			    int, int, struct pfi_kif *, struct pf_src_node **,
 			    struct pf_state_key **, struct pf_state_key **,
