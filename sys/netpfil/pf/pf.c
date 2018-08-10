@@ -6265,6 +6265,10 @@ done:
 				addr[(s->direction == PF_IN)],
 			    pd.af, pd.tot_len, dir == PF_OUT,
 			    r->action == PF_PASS, tr->dst.neg);
+		if (s && s->rtable)
+			pfr_update_stats(s->rtable, &s->rt_addr,
+			    pd.af, pd.tot_len, dir == PF_OUT,
+			    r->action == PF_PASS, 0);
 	}
 
 	switch (action) {
@@ -6661,6 +6665,10 @@ done:
 			    &s->key[(s->direction == PF_IN)]->addr[1],
 			    pd.af, pd.tot_len, dir == PF_OUT,
 			    r->action == PF_PASS, tr->dst.neg);
+		if (s && s->rtable)
+			pfr_update_stats(s->rtable, &s->rt_addr,
+			    pd.af, pd.tot_len, dir == PF_OUT,
+			    r->action == PF_PASS, 0);
 	}
 
 	switch (action) {
