@@ -468,6 +468,9 @@ print_pool(struct pf_pool *pool, u_int16_t p1, u_int16_t p2,
 	case PF_POOL_ROUNDROBIN:
 		printf(" round-robin");
 		break;
+	case PF_POOL_LEASTSTATES:
+		printf(" least-states");
+		break;
 	}
 	if (pool->opts & PF_POOL_STICKYADDR)
 		printf(" sticky-address");

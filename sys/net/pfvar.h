@@ -141,6 +141,10 @@ struct pfi_dynaddr {
 #define	PF_STATE_LOCK_ASSERT(s)		do {} while (0)
 #endif /* INVARIANTS */
 
+#define	SUNION2PF(su, af) (((af)==AF_INET) ?	\
+    (struct pf_addr *)&(su)->sin.sin_addr :	\
+    (struct pf_addr *)&(su)->sin6.sin6_addr)
+
 extern struct mtx pf_unlnkdrules_mtx;
 #define	PF_UNLNKDRULES_LOCK()	mtx_lock(&pf_unlnkdrules_mtx)
 #define	PF_UNLNKDRULES_UNLOCK()	mtx_unlock(&pf_unlnkdrules_mtx)
@@ -1694,6 +1698,8 @@ int	pfr_ina_rollback(struct pfr_table *, u_int32_t, int *, int);
 int	pfr_ina_commit(struct pfr_table *, u_int32_t, int *, int *, int);
 int	pfr_ina_define(struct pfr_table *, struct pfr_addr *, int, int *,
 	    int *, u_int32_t, int);
+void	 pfr_enqueue_addrs(struct pfr_ktable *,
+	    struct pfr_kentryworkq *, int *, int, sa_family_t);
 
 MALLOC_DECLARE(PFI_MTYPE);
 VNET_DECLARE(struct pfi_kif *,		 pfi_all);

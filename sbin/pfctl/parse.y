@@ -457,7 +457,7 @@ int	parseport(char *, struct range *r, int);
 %token	SET OPTIMIZATION TIMEOUT LIMIT LOGINTERFACE BLOCKPOLICY FAILPOLICY
 %token	RANDOMID REQUIREORDER SYNPROXY FINGERPRINTS NOSYNC DEBUG SKIP HOSTID
 %token	ANTISPOOF FOR INCLUDE
-%token	BITMASK RANDOM SOURCEHASH ROUNDROBIN STATICPORT PROBABILITY
+%token	BITMASK RANDOM SOURCEHASH ROUNDROBIN LEASTSTATES STATICPORT PROBABILITY
 %token	ALTQ CBQ CODEL PRIQ HFSC FAIRQ BANDWIDTH TBRSIZE LINKSHARE REALTIME
 %token	UPPERLIMIT QUEUE PRIORITY QLIMIT HOGS BUCKETS RTABLE TARGET INTERVAL
 %token	LOAD RULESET_OPTIMIZATION PRIO
@@ -2360,10 +2360,13 @@ pfrule		: action dir logquick interface route af proto fromto
 				    $5.host->addr.type == PF_ADDR_TABLE ||
 				    DYNIF_MULTIADDR($5.host->addr)))
 					r.rpool.opts |= PF_POOL_ROUNDROBIN;
-				if ((r.rpool.opts & PF_POOL_TYPEMASK) !=
+				if (((r.rpool.opts & PF_POOL_TYPEMASK) !=
 				    PF_POOL_ROUNDROBIN &&
+				    (r.rpool.opts & PF_POOL_TYPEMASK) !=
+				    PF_POOL_LEASTSTATES) &&
 				    disallow_table($5.host, "tables are only "
-				    "supported in round-robin routing pools"))
+				    "supported in round-robin and least-states "
+				    "routing pools"))
 					YYERROR;
 				if ((r.rpool.opts & PF_POOL_TYPEMASK) !=
 				    PF_POOL_ROUNDROBIN &&
@@ -2373,9 +2376,12 @@ pfrule		: action dir logquick interface route af proto fromto
 					YYERROR;
 				if ($5.host->next != NULL) {
 					if ((r.rpool.opts & PF_POOL_TYPEMASK) !=
-					    PF_POOL_ROUNDROBIN) {
+					    PF_POOL_ROUNDROBIN &&
+					    (r.rpool.opts & PF_POOL_TYPEMASK) !=
+					    PF_POOL_LEASTSTATES) {
 						yyerror("r.rpool.opts must "
-						    "be PF_POOL_ROUNDROBIN");
+						    "be PF_POOL_ROUNDROBIN "
+						    "or PF_POOL_LEASTSTATES");
 						YYERROR;
 					}
 				}
@@ -3986,6 +3992,13 @@ pool_opt	: BITMASK	{
 			}
 			pool_opts.type = PF_POOL_ROUNDROBIN;
 		}
+		| LEASTSTATES	{
+			if (pool_opts.type) {
+				yyerror("pool type cannot be redefined");
+				YYERROR;
+			}
+			pool_opts.type = PF_POOL_LEASTSTATES;
+		}
 		| STATICPORT	{
 			if (pool_opts.staticport) {
 				yyerror("static-port cannot be redefined");
@@ -4157,10 +4170,13 @@ natrule		: nataction interface af proto fromto tag tagged rtable
 				    $9->host->addr.type == PF_ADDR_TABLE ||
 				    DYNIF_MULTIADDR($9->host->addr)))
 					r.rpool.opts = PF_POOL_ROUNDROBIN;
-				if ((r.rpool.opts & PF_POOL_TYPEMASK) !=
+				if (((r.rpool.opts & PF_POOL_TYPEMASK) !=
 				    PF_POOL_ROUNDROBIN &&
+				    (r.rpool.opts & PF_POOL_TYPEMASK) !=
+				    PF_POOL_LEASTSTATES) &&
 				    disallow_table($9->host, "tables are only "
-				    "supported in round-robin redirection "
+				    "supported in round-robin and least-states "
+				    "redirection "
 				    "pools"))
 					YYERROR;
 				if ((r.rpool.opts & PF_POOL_TYPEMASK) !=
@@ -4171,8 +4187,11 @@ natrule		: nataction interface af proto fromto tag tagged rtable
 					YYERROR;
 				if ($9->host->next != NULL) {
 					if ((r.rpool.opts & PF_POOL_TYPEMASK) !=
-					    PF_POOL_ROUNDROBIN) {
-						yyerror("only round-robin "
+					    PF_POOL_ROUNDROBIN &&
+					    (r.rpool.opts & PF_POOL_TYPEMASK) !=
+					    PF_POOL_LEASTSTATES) {
+						yyerror("only round-robin and "
+						    "least-states "
 						    "valid for multiple "
 						    "redirection addresses");
 						YYERROR;
@@ -5512,6 +5531,7 @@ lookup(char *s)
 		{ "interval",		INTERVAL},
 		{ "keep",		KEEP},
 		{ "label",		LABEL},
+		{ "least-states",	LEASTSTATES},
 		{ "limit",		LIMIT},
 		{ "linkshare",		LINKSHARE},
 		{ "load",		LOAD},

@@ -293,6 +293,7 @@ pf_get_sport(sa_family_t af, u_int8_t proto, struct pf_rule *r,
 		switch (r->rpool.opts & PF_POOL_TYPEMASK) {
 		case PF_POOL_RANDOM:
 		case PF_POOL_ROUNDROBIN:
+		case PF_POOL_LEASTSTATES:
 			if (pf_map_addr(af, r, saddr, naddr, NULL, NULL,
 			    &init_addr, sn, 0))
 				return (1);
@@ -388,7 +389,8 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 #endif /* INET6 */
 		}
 	} else if (rpool->cur->addr.type == PF_ADDR_TABLE) {
-		if ((rpool->opts & PF_POOL_TYPEMASK) != PF_POOL_ROUNDROBIN) {
+		if ((rpool->opts & PF_POOL_TYPEMASK) != PF_POOL_ROUNDROBIN &&
+		    (rpool->opts & PF_POOL_TYPEMASK) != PF_POOL_LEASTSTATES) {
 			if (sh && !return_locked)
 				PF_HASHROW_UNLOCK(sh);
 			return (1); /* unsupported */
@@ -524,6 +526,56 @@ pf_map_addr(sa_family_t af, struct pf_rule *r, struct pf_addr *saddr,
 			*rt_kif = rpool->cur->kif;
 		if (rt_table && rpool->cur->addr.type == PF_ADDR_TABLE)
 			*rt_table = rpool->cur->addr.p.tbl;
+		break;
+	    }
+	case PF_POOL_LEASTSTATES:
+	    {
+		struct pfr_kentryworkq	 addrq;
+		struct pf_pooladdr	*cur_pa;
+		struct pfr_kentry	*cur_ke;
+		struct pf_addr		*ls_addr = NULL;
+		int64_t			 cur_states;
+		int64_t			 ls_states = -1;
+		
+
+		mtx_lock(&rpool->lock);
+		pool_locked = true;
+
+		/*
+		 * States are counted per table entry, so there is no way
+		 * to dive into subnets. A first address of the subnet is taken
+		 * and the netmask is ignored.
+		 */
+		TAILQ_FOREACH(cur_pa, &rpool->list, entries) {
+			if (cur_pa->addr.type == PF_ADDR_TABLE) {
+				pfr_enqueue_addrs(cur_pa->addr.p.tbl, &addrq,
+				    NULL, 0, af);
+				SLIST_FOREACH(cur_ke, &addrq, pfrke_workq) {
+					cur_states = counter_u64_fetch(
+					    cur_ke->pfrke_counters.pfrkc_states);
+					if (cur_states < ls_states ||
+					    ls_states == -1) {
+						rpool->cur = cur_pa;
+						ls_states = cur_states;
+						ls_addr = SUNION2PF(
+						    &cur_ke->pfrke_sa, af);
+					}
+				}
+			}
+		}
+
+		if (ls_addr == NULL) {
+			mtx_unlock(&rpool->lock);
+			if (sh && !return_locked)
+				PF_HASHROW_UNLOCK(sh);
+			return (1);
+		} else {
+			PF_ACPY(naddr, ls_addr, af);
+			if (rt_kif)
+				*rt_kif = rpool->cur->kif;
+			if (rt_table)
+				*rt_table = rpool->cur->addr.p.tbl;
+		}
 		break;
 	    }
 	}

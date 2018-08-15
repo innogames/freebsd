@@ -78,10 +78,6 @@ __FBSDID("$FreeBSD$");
 		a2 = tmp;			\
 	} while (0)
 
-#define	SUNION2PF(su, af) (((af)==AF_INET) ?	\
-    (struct pf_addr *)&(su)->sin.sin_addr :	\
-    (struct pf_addr *)&(su)->sin6.sin6_addr)
-
 #define	AF_BITS(af)		(((af)==AF_INET)?32:128)
 #define	ADDR_NETWORK(ad)	((ad)->pfra_net < AF_BITS((ad)->pfra_af))
 #define	KENTRY_NETWORK(ke)	((ke)->pfrke_net < AF_BITS((ke)->pfrke_af))
@@ -132,8 +128,6 @@ static struct pf_addr	 pfr_ffaddr = {
 static void		 pfr_copyout_addr(struct pfr_addr *,
 			    struct pfr_kentry *ke);
 static int		 pfr_validate_addr(struct pfr_addr *);
-static void		 pfr_enqueue_addrs(struct pfr_ktable *,
-			    struct pfr_kentryworkq *, int *, int);
 static void		 pfr_mark_addrs(struct pfr_ktable *);
 static struct pfr_kentry
 			*pfr_lookup_addr(struct pfr_ktable *,
@@ -220,7 +214,7 @@ pfr_clr_addrs(struct pfr_table *tbl, int *ndel, int flags)
 		return (ESRCH);
 	if (kt->pfrkt_flags & PFR_TFLAG_CONST)
 		return (EPERM);
-	pfr_enqueue_addrs(kt, &workq, ndel, 0);
+	pfr_enqueue_addrs(kt, &workq, ndel, 0, AF_UNSPEC);
 
 	if (!(flags & PFR_FLAG_DUMMY)) {
 		pfr_remove_kentries(kt, &workq);
@@ -452,7 +446,7 @@ _skip:
 		if (flags & PFR_FLAG_FEEDBACK)
 			bcopy(&ad, addr + i, sizeof(ad));
 	}
-	pfr_enqueue_addrs(kt, &delq, &xdel, ENQUEUE_UNMARKED_ONLY);
+	pfr_enqueue_addrs(kt, &delq, &xdel, ENQUEUE_UNMARKED_ONLY, AF_UNSPEC);
 	if ((flags & PFR_FLAG_FEEDBACK) && *size2) {
 		if (*size2 < size+xdel) {
 			*size2 = size+xdel;
@@ -607,7 +601,7 @@ pfr_get_astats(struct pfr_table *tbl, struct pfr_astats *addr, int *size,
 		rv = kt->pfrkt_ip6->rnh_walktree(&kt->pfrkt_ip6->rh,
 		    pfr_walktree, &w);
 	if (!rv && (flags & PFR_FLAG_CLSTATS)) {
-		pfr_enqueue_addrs(kt, &workq, NULL, 0);
+		pfr_enqueue_addrs(kt, &workq, NULL, 0, AF_UNSPEC);
 		pfr_clstats_kentries(&workq, tzero, 0);
 	}
 	if (rv)
@@ -700,9 +694,9 @@ pfr_validate_addr(struct pfr_addr *ad)
 	return (0);
 }
 
-static void
+void
 pfr_enqueue_addrs(struct pfr_ktable *kt, struct pfr_kentryworkq *workq,
-	int *naddr, int sweep)
+	int *naddr, int sweep, sa_family_t af)
 {
 	struct pfr_walktree	w;
 
@@ -710,11 +704,11 @@ pfr_enqueue_addrs(struct pfr_ktable *kt, struct pfr_kentryworkq *workq,
 	bzero(&w, sizeof(w));
 	w.pfrw_op = sweep ? PFRW_SWEEP : PFRW_ENQUEUE;
 	w.pfrw_workq = workq;
-	if (kt->pfrkt_ip4 != NULL)
+	if ((af == AF_UNSPEC || af == AF_INET) && kt->pfrkt_ip4 != NULL)
 		if (kt->pfrkt_ip4->rnh_walktree(&kt->pfrkt_ip4->rh,
 		    pfr_walktree, &w))
 			printf("pfr_enqueue_addrs: IPv4 walktree failed.\n");
-	if (kt->pfrkt_ip6 != NULL)
+	if ((af == AF_UNSPEC || af == AF_INET6) && kt->pfrkt_ip6 != NULL)
 		if (kt->pfrkt_ip6->rnh_walktree(&kt->pfrkt_ip6->rh,
 		    pfr_walktree, &w))
 			printf("pfr_enqueue_addrs: IPv6 walktree failed.\n");
@@ -1643,7 +1637,7 @@ pfr_commit_ktable(struct pfr_ktable *kt, long tzero)
 		struct pfr_kentry	*p, *q, *next;
 		struct pfr_addr		 ad;
 
-		pfr_enqueue_addrs(shadow, &addrq, NULL, 0);
+		pfr_enqueue_addrs(shadow, &addrq, NULL, 0, AF_UNSPEC);
 		pfr_mark_addrs(kt);
 		SLIST_INIT(&addq);
 		SLIST_INIT(&changeq);
@@ -1665,7 +1659,7 @@ pfr_commit_ktable(struct pfr_ktable *kt, long tzero)
 				SLIST_INSERT_HEAD(&addq, p, pfrke_workq);
 			}
 		}
-		pfr_enqueue_addrs(kt, &delq, NULL, ENQUEUE_UNMARKED_ONLY);
+		pfr_enqueue_addrs(kt, &delq, NULL, ENQUEUE_UNMARKED_ONLY, AF_UNSPEC);
 		pfr_insert_kentries(kt, &addq, tzero);
 		pfr_remove_kentries(kt, &delq);
 		pfr_clstats_kentries(&changeq, tzero, INVERT_NEG_FLAG);
@@ -1821,7 +1815,7 @@ pfr_setflags_ktable(struct pfr_ktable *kt, int newf)
 		return;
 	}
 	if (!(newf & PFR_TFLAG_ACTIVE) && kt->pfrkt_cnt) {
-		pfr_enqueue_addrs(kt, &addrq, NULL, 0);
+		pfr_enqueue_addrs(kt, &addrq, NULL, 0, AF_UNSPEC);
 		pfr_remove_kentries(kt, &addrq);
 	}
 	if (!(newf & PFR_TFLAG_INACTIVE) && kt->pfrkt_shadow != NULL) {
@@ -1847,7 +1841,7 @@ pfr_clstats_ktable(struct pfr_ktable *kt, long tzero, int recurse)
 	int			 pfr_dir, pfr_op;
 
 	if (recurse) {
-		pfr_enqueue_addrs(kt, &addrq, NULL, 0);
+		pfr_enqueue_addrs(kt, &addrq, NULL, 0, AF_UNSPEC);
 		pfr_clstats_kentries(&addrq, tzero, 0);
 	}
 	for (pfr_dir = 0; pfr_dir < PFR_DIR_MAX; pfr_dir ++)
@@ -1924,7 +1918,7 @@ pfr_destroy_ktable(struct pfr_ktable *kt, int flushaddr)
 	int			 pfr_dir, pfr_op;
 
 	if (flushaddr) {
-		pfr_enqueue_addrs(kt, &addrq, NULL, 0);
+		pfr_enqueue_addrs(kt, &addrq, NULL, 0, AF_UNSPEC);
 		pfr_clean_node_mask(kt, &addrq);
 		pfr_destroy_kentries(&addrq);
 	}
