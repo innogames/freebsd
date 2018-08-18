@@ -517,6 +517,7 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 	    r != &V_pf_default_rule &&
 	    (r->rpool.opts & PF_POOL_TYPEMASK ) == PF_POOL_ROUNDROBIN
 	) {
+		mtx_lock(&r->rpool.lock);
 		struct pf_pooladdr *acur;
 		TAILQ_FOREACH(acur, &(r->rpool.list), entries) {
 			if (
@@ -526,6 +527,7 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 			)
 				st->rt_kif = acur->kif;
 		};
+		mtx_unlock(&r->rpool.lock);
         };
 
 	st->direction = sp->direction;
