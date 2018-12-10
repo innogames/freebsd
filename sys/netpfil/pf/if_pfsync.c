@@ -540,20 +540,23 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 	st->rt_kif = NULL;
 
 	if (st->state_flags & PFSTATE_HAS_RTKIF) {
-		kprintf("pfsync: got state with kif\n");
+		printf("pfsync: got state with kif\n");
 		switch (sp->af) {
 #ifdef INET
 			case AF_INET:
 			fib4_lookup_nh_basic(0, st->rt_addr.v4, 0, 0, &nh4);
-			st->rt_kif = nh4->nh_ifp;
+			st->rt_kif = pfi_kif_find(nh4.nh_ifp->if_xname);
 			break;
 #endif
 #ifdef INET6
 			case AF_INET6:
 			fib6_lookup_nh_basic(0, &(st->rt_addr.v6), 0, 0, 0, &nh6);
-			st->rt_kif = nh6.nh_ifp;
+			st->rt_kif = pfi_kif_find(nh6.nh_ifp->if_xname);
 			break;
 #endif
+		}
+		if (st->rt_kif) {
+			printf("pfsync: rt_kif %s\n", st->rt_kif->pfik_name);
 		}
 	}
 
