@@ -3709,6 +3709,7 @@ pf_create_state(struct pf_rule *r, struct pf_rule *nr, struct pf_rule *a,
 			goto csfailed;
 		}
 		s->rt_kif = r->rpool.cur->kif;
+		s->state_flags |= PFSTATE_HAS_RTKIF;
 	}
 
 	s->creation = time_uptime;

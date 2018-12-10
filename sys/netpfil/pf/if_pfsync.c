@@ -99,6 +99,13 @@ __FBSDID("$FreeBSD$");
 #include <netinet/tcp_fsm.h>
 #include <netinet/tcp_seq.h>
 
+#ifdef INET
+#include <netinet/in_fib.h>
+#endif
+#ifdef INET6
+#include <netinet6/in6_fib.h>
+#endif
+
 #define PFSYNC_MINPKT ( \
 	sizeof(struct ip) + \
 	sizeof(struct pfsync_header) + \
@@ -412,6 +419,12 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 	struct pf_rule *r = NULL;
 	struct pfi_kif	*kif;
 	int error;
+#ifdef INET
+	struct nhop4_basic nh4;
+#endif
+#ifdef INET6
+	struct nhop6_basic nh6;
+#endif
 
 	PF_RULES_RASSERT();
 
@@ -511,23 +524,6 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 		st->expire -= timeout - ntohl(sp->expire);
 	}
 
-        /* reconstruct rt_kif from rule for round-robin redirection */
-        st->rt_kif = NULL;
-        if (
-	    r != &V_pf_default_rule &&
-	    (r->rpool.opts & PF_POOL_TYPEMASK ) == PF_POOL_ROUNDROBIN
-	) {
-		struct pf_pooladdr *acur;
-		TAILQ_FOREACH(acur, &(r->rpool.list), entries) {
-			if (
-			    acur->addr.type == PF_ADDR_TABLE &&
-			    pfr_match_addr(acur->addr.p.tbl, &st->rt_addr,
-				skw->af)
-			)
-				st->rt_kif = acur->kif;
-		};
-        };
-
 	st->direction = sp->direction;
 	st->log = sp->log;
 	st->timeout = sp->timeout;
@@ -541,6 +537,25 @@ pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
 	st->rule.ptr = r;
 	st->nat_rule.ptr = NULL;
 	st->anchor.ptr = NULL;
+	st->rt_kif = NULL;
+
+	if (st->state_flags & PFSTATE_HAS_RTKIF) {
+		kprintf("pfsync: got state with kif\n");
+		switch (sp->af) {
+#ifdef INET
+			case AF_INET:
+			fib4_lookup_nh_basic(0, st->rt_addr.v4, 0, 0, &nh4);
+			st->rt_kif = nh4->nh_ifp;
+			break;
+#endif
+#ifdef INET6
+			case AF_INET6:
+			fib6_lookup_nh_basic(0, &(st->rt_addr.v6), 0, 0, 0, &nh6);
+			st->rt_kif = nh6.nh_ifp;
+			break;
+#endif
+		}
+	}
 
 	st->pfsync_time = time_uptime;
 	st->sync_state = PFSYNC_S_NONE;

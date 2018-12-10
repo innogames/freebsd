@@ -743,6 +743,7 @@ struct pf_state {
 /*  was	PFSTATE_PFLOW		0x04 */
 #define	PFSTATE_NOSYNC		0x08
 #define	PFSTATE_ACK		0x10
+#define PFSTATE_HAS_RTKIF	0x20
 #define	PFSTATE_SETPRIO		0x0200
 #define	PFSTATE_SETMASK   (PFSTATE_SETPRIO)
 	u_int8_t		 timeout;
