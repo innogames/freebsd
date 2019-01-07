@@ -73,6 +73,7 @@ __FBSDID("$FreeBSD$");
 #ifdef INET
 #include <netinet/ip_var.h>
 #include <netinet/if_ether.h>
+#include <netinet/in_fib.h>
 #endif
 
 #ifdef INET6
@@ -82,6 +83,7 @@ __FBSDID("$FreeBSD$");
 #include <netinet6/ip6_var.h>
 #include <netinet6/scope6_var.h>
 #include <netinet6/nd6.h>
+#include <netinet6/in6_fib.h>
 #endif
 
 #include <crypto/sha1.h>
@@ -210,8 +212,28 @@ static VNET_DEFINE(int, carp_senderr_adj) = CARP_MAXSKEW;
 static VNET_DEFINE(int, carp_ifdown_adj) = CARP_MAXSKEW;
 #define	V_carp_ifdown_adj	VNET(carp_ifdown_adj)
 
+/* Route missing demotion factor. */
+static VNET_DEFINE(int, carp_noroute_adj) = CARP_MAXSKEW;
+#define	V_carp_noroute_adj	VNET(carp_noroute_adj)
+
 static int carp_allow_sysctl(SYSCTL_HANDLER_ARGS);
 static int carp_demote_adj_sysctl(SYSCTL_HANDLER_ARGS);
+
+#ifdef INET
+static VNET_DEFINE(struct sockaddr, carp_ipv4_net);
+#define	V_carp_ipv4_net VNET(carp_ipv4_net)
+static VNET_DEFINE(struct sockaddr, carp_ipv4_mask);
+#define	V_carp_ipv4_mask VNET(carp_ipv4_mask)
+static int carp_ipv4_route_sysctl(SYSCTL_HANDLER_ARGS);
+#endif
+
+#ifdef INET6
+static VNET_DEFINE(struct sockaddr, carp_ipv6_net);
+#define	V_carp_ipv6_net VNET(carp_ipv6_net)
+static VNET_DEFINE(struct sockaddr, carp_ipv6_mask);
+#define	V_carp_ipv6_mask VNET(carp_ipv6_mask)
+static int carp_ipv6_route_sysctl(SYSCTL_HANDLER_ARGS);
+#endif
 
 SYSCTL_NODE(_net_inet, IPPROTO_CARP,	carp,	CTLFLAG_RW, 0,	"CARP");
 SYSCTL_PROC(_net_inet_carp, OID_AUTO, allow,
@@ -232,6 +254,20 @@ SYSCTL_INT(_net_inet_carp, OID_AUTO, ifdown_demotion_factor,
     CTLFLAG_VNET | CTLFLAG_RW,
     &VNET_NAME(carp_ifdown_adj), 0,
     "Interface down demotion factor adjustment");
+SYSCTL_INT(_net_inet_carp, OID_AUTO, noroute_demotion_factor,
+    CTLFLAG_VNET | CTLFLAG_RW,
+    &VNET_NAME(carp_noroute_adj), 0,
+    "No route demotion factor adjustment");
+#ifdef INET
+SYSCTL_PROC(_net_inet_carp, OID_AUTO, ipv4_route_check,
+    CTLFLAG_VNET|CTLTYPE_STRING|CTLFLAG_RW, 0, INET_ADDRSTRLEN, carp_ipv4_route_sysctl,
+    "A", "Route to check for IPv4 carp");
+#endif
+#ifdef INET6
+SYSCTL_PROC(_net_inet_carp, OID_AUTO, ipv6_route_check,
+    CTLFLAG_VNET|CTLTYPE_STRING|CTLFLAG_RW, 0, INET6_ADDRSTRLEN, carp_ipv6_route_sysctl,
+    "A", "Route to check for IPv6 carp");
+#endif
 
 VNET_PCPUSTAT_DEFINE(struct carpstats, carpstats);
 VNET_PCPUSTAT_SYSINIT(carpstats);
@@ -818,9 +854,12 @@ carp_send_ad_locked(struct carp_softc *sc)
 
 	/* XXXGL: OpenBSD picks first ifaddr with needed family. */
 
+
 #ifdef INET
 	if (sc->sc_naddrs) {
 		struct ip *ip;
+		//struct nhop4_basic nh4;
+		//fib4_lookup_nh_basic(0, st->rt_addr.v4, 0, 0, &nh4);
 
 		m = m_gethdr(M_NOWAIT, MT_DATA);
 		if (m == NULL) {
@@ -873,6 +912,8 @@ carp_send_ad_locked(struct carp_softc *sc)
 #ifdef INET6
 	if (sc->sc_naddrs6) {
 		struct ip6_hdr *ip6;
+		//struct nhop6_basic nh6;
+		//fib6_lookup_nh_basic(0, &(st->rt_addr.v6), 0, 0, 0, &nh6);
 
 		m = m_gethdr(M_NOWAIT, MT_DATA);
 		if (m == NULL) {
@@ -2044,6 +2085,56 @@ carp_demote_adj_sysctl(SYSCTL_HANDLER_ARGS)
 		return (error);
 
 	carp_demote_adj(new, "sysctl");
+
+	return (0);
+}
+
+static int
+carp_ipv4_route_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	int error;
+	char buf[INET_ADDRSTRLEN];
+	strlcpy(buf, "", sizeof(buf));
+
+	if (req->newptr == NULL) {
+		inet_ntop(AF_INET, &VNET_NAME(carp_ipv4_net), buf, sizeof(buf));
+	}
+
+	error = sysctl_handle_string(oidp, buf, sizeof(buf), req);
+	if (error != 0)
+		return (error);
+
+	if (req->newptr &&
+	    inet_pton(AF_INET, buf, &VNET_NAME(carp_ipv4_net)) != 1
+	) {
+		uprintf("carp: could not parse IPv4 prefix %s\n", buf);
+		return(EINVAL);
+	}
+
+	return (0);
+}
+
+static int
+carp_ipv6_route_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	int error;
+	char buf[INET_ADDRSTRLEN];
+	strlcpy(buf, "", sizeof(buf));
+
+	if (req->newptr == NULL) {
+		inet_ntop(AF_INET6, &VNET_NAME(carp_ipv6_net), buf, sizeof(buf));
+	}
+
+	error = sysctl_handle_string(oidp, buf, sizeof(buf), req);
+	if (error != 0)
+		return (error);
+
+	if (req->newptr &&
+	    inet_pton(AF_INET6, buf, &VNET_NAME(carp_ipv6_net)) != 1
+	) {
+		uprintf("carp: could not parse IPv6 prefix %s\n", buf);
+		return(EINVAL);
+	}
 
 	return (0);
 }
