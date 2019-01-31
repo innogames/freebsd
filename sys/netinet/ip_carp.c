@@ -210,6 +210,10 @@ static VNET_DEFINE(int, carp_senderr_adj) = CARP_MAXSKEW;
 static VNET_DEFINE(int, carp_ifdown_adj) = CARP_MAXSKEW;
 #define	V_carp_ifdown_adj	VNET(carp_ifdown_adj)
 
+/* Include IP addresses in HMAC. */
+static VNET_DEFINE(int, carp_address_hmac) = 0;
+#define	V_carp_address_hmac	VNET(carp_address_hmac)
+
 static int carp_allow_sysctl(SYSCTL_HANDLER_ARGS);
 static int carp_demote_adj_sysctl(SYSCTL_HANDLER_ARGS);
 
@@ -232,6 +236,8 @@ SYSCTL_INT(_net_inet_carp, OID_AUTO, ifdown_demotion_factor,
     CTLFLAG_VNET | CTLFLAG_RW,
     &VNET_NAME(carp_ifdown_adj), 0,
     "Interface down demotion factor adjustment");
+SYSCTL_INT(_net_inet_carp, OID_AUTO, address_hmac, CTLFLAG_VNET | CTLFLAG_RW,
+    &VNET_NAME(carp_address_hmac), 0, "Include IP addresses when calculating HMAC");
 
 VNET_PCPUSTAT_DEFINE(struct carpstats, carpstats);
 VNET_PCPUSTAT_SYSINIT(carpstats);
@@ -354,6 +360,7 @@ carp_hmac_prepare(struct carp_softc *sc)
 	SHA1Update(&sc->sc_sha1, (void *)&vhid, sizeof(vhid));
 #ifdef INET
 	cur.s_addr = 0;
+	if (V_carp_address_hmac)
 	do {
 		found = 0;
 		last = cur;
@@ -373,6 +380,7 @@ carp_hmac_prepare(struct carp_softc *sc)
 #endif /* INET */
 #ifdef INET6
 	memset(&cur6, 0, sizeof(cur6));
+	if (V_carp_address_hmac)
 	do {
 		found = 0;
 		last6 = cur6;
