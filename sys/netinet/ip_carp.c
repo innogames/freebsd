@@ -211,7 +211,7 @@ static VNET_DEFINE(int, carp_ifdown_adj) = CARP_MAXSKEW;
 #define	V_carp_ifdown_adj	VNET(carp_ifdown_adj)
 
 /* Include IP addresses in HMAC. */
-static VNET_DEFINE(int, carp_address_hmac) = 0;
+static VNET_DEFINE(int, carp_address_hmac) = 1;
 #define	V_carp_address_hmac	VNET(carp_address_hmac)
 
 static int carp_allow_sysctl(SYSCTL_HANDLER_ARGS);
